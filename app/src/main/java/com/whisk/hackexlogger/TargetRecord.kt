@@ -15,7 +15,8 @@ data class TargetRecord(
     var firewall: Int? = null,
     var encryptor: Int? = null,
     var wallets: MutableList<String> = mutableListOf(),
-    var downloads: MutableMap<String, SoftwareEntry> = mutableMapOf()
+    var downloads: MutableMap<String, SoftwareEntry> = mutableMapOf(),
+    var lastValidated: String? = null
 ) {
     val isMasked: Boolean
         get() = ip.contains("xxx")

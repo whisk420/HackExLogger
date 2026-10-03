@@ -62,6 +62,26 @@ object DatabaseManager {
         prefs.edit().remove(KEY_TARGETS).apply()
     }
 
+    fun getNextRecordToValidate(): TargetRecord? {
+        val unmaskedRecords = getAllRecords().filter { !it.isMasked }
+        if (unmaskedRecords.isEmpty()) return null
+
+        val neverValidated = unmaskedRecords.filter { it.lastValidated == null }
+        if (neverValidated.isNotEmpty()) {
+            return neverValidated.first()
+        }
+
+        return unmaskedRecords.minByOrNull { it.lastValidated ?: "" }
+    }
+
+    fun markValidated(ip: String) {
+        val currentRecords = getAllRecords().toMutableList()
+        val record = currentRecords.find { it.ip == ip } ?: return
+        val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)
+        record.lastValidated = sdf.format(Date())
+        saveAllRecords(currentRecords)
+    }
+
     fun exportDataBundle(): String {
         val records = getAllRecords()
         val isoFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
@@ -323,7 +343,8 @@ object DatabaseManager {
             firewall = incoming.firewall ?: base.firewall,
             encryptor = incoming.encryptor ?: base.encryptor,
             wallets = (base.wallets + incoming.wallets).distinct().toMutableList(),
-            downloads = (base.downloads + incoming.downloads).toMutableMap()
+            downloads = (base.downloads + incoming.downloads).toMutableMap(),
+            lastValidated = incoming.lastValidated ?: base.lastValidated
         )
     }
 

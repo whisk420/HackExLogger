@@ -46,6 +46,8 @@ class TargetAdapter(
     private val onTogglePartial: () -> Unit
 ) : ListAdapter<ListItem, RecyclerView.ViewHolder>(ListItemDiffCallback()) {
 
+    var currentValidatingIp: String? = null
+
     companion object {
         private const val TYPE_HEADER = 0
         private const val TYPE_TARGET = 1
@@ -72,7 +74,7 @@ class TargetAdapter(
     override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
         when (val item = getItem(position)) {
             is ListItem.Header -> (holder as HeaderViewHolder).bind(item)
-            is ListItem.Target -> (holder as TargetViewHolder).bind(item.target)
+            is ListItem.Target -> (holder as TargetViewHolder).bind(item.target, currentValidatingIp)
         }
     }
 
@@ -107,6 +109,7 @@ class TargetAdapter(
         private val metaText: TextView = itemView.findViewById(R.id.metaText)
         private val walletsText: TextView = itemView.findViewById(R.id.walletsText)
         private val softwareText: TextView = itemView.findViewById(R.id.softwareText)
+        private val validatedText: TextView = itemView.findViewById(R.id.validatedText)
 
         private val softwareIcons = mapOf(
             "Antivirus" to "💉",
@@ -122,8 +125,14 @@ class TargetAdapter(
             "Keygen" to "⚙️"
         )
 
-        fun bind(target: TargetRecord) {
-            ipText.text = target.ip
+        fun bind(target: TargetRecord, currentValidatingIp: String?) {
+            if (target.ip == currentValidatingIp) {
+                ipText.text = "👉 ${target.ip}"
+                ipText.setTextColor(Color.parseColor("#f59e0b"))
+            } else {
+                ipText.text = target.ip
+                ipText.setTextColor(Color.parseColor("#38bdf8"))
+            }
 
             ipText.setOnClickListener {
                 copyToClipboard("IP Address", target.ip)
@@ -159,6 +168,14 @@ class TargetAdapter(
                 softwareText.visibility = View.VISIBLE
             } else {
                 softwareText.visibility = View.GONE
+            }
+
+            if (target.lastValidated != null) {
+                validatedText.text = "✓ Validated: ${target.lastValidated}"
+                validatedText.setTextColor(Color.parseColor("#4ade80"))
+            } else {
+                validatedText.text = "Never validated"
+                validatedText.setTextColor(Color.parseColor("#64748b"))
             }
         }
 

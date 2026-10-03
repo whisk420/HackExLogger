@@ -112,6 +112,13 @@ class MainActivity : AppCompatActivity() {
         targetAdapter = TargetAdapter(this::onEditTarget, this::onDeleteTarget, this::onTogglePartial)
         findViewById<RecyclerView>(R.id.targetsRecycler).adapter = targetAdapter
 
+        findViewById<Button>(R.id.validateBtn).setOnClickListener {
+            val intent = Intent(this, OverlayService::class.java).apply {
+                action = OverlayService.ACTION_TOGGLE_VALIDATION
+            }
+            startService(intent)
+        }
+
         findViewById<Button>(R.id.exportDataBtn).setOnClickListener {
             val dateStr = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
             exportLauncher.launch("target_console_$dateStr.json")
