@@ -3,7 +3,12 @@ package com.whisk.hackexlogger
 import android.content.Context
 import android.content.SharedPreferences
 import com.google.gson.Gson
+import com.google.gson.GsonBuilder
 import com.google.gson.reflect.TypeToken
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 
 object DatabaseManager {
     private const val PREFS_NAME = "HackExDB"
@@ -11,31 +16,153 @@ object DatabaseManager {
     
     private lateinit var prefs: SharedPreferences
     private val gson = Gson()
+    private val cachedRecords = mutableListOf<TargetRecord>()
+    @Volatile private var isInitialized = false
 
     fun init(context: Context) {
-        prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        if (!isInitialized) {
+            prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            loadCacheFromDisk()
+            isInitialized = true
+        }
+    }
+
+    private fun loadCacheFromDisk() {
+        val json = prefs.getString(KEY_TARGETS, "[]")
+        val type = object : TypeToken<List<TargetRecord>>() {}.type
+        val loaded: List<TargetRecord>? = gson.fromJson(json, type)
+        synchronized(cachedRecords) {
+            cachedRecords.clear()
+            if (loaded != null) {
+                cachedRecords.addAll(loaded)
+            }
+        }
     }
 
     fun getAllRecords(): List<TargetRecord> {
-        val json = prefs.getString(KEY_TARGETS, "[]")
-        val type = object : TypeToken<List<TargetRecord>>() {}.type
-        return gson.fromJson(json, type) ?: emptyList()
+        if (!isInitialized) return emptyList()
+        synchronized(cachedRecords) {
+            return cachedRecords.map { it.copy(wallets = it.wallets.toMutableList(), downloads = it.downloads.toMutableMap()) }
+        }
     }
 
     private fun saveAllRecords(records: List<TargetRecord>) {
-        prefs.edit().putString(KEY_TARGETS, gson.toJson(records)).apply()
+        synchronized(cachedRecords) {
+            cachedRecords.clear()
+            cachedRecords.addAll(records)
+        }
+        val json = gson.toJson(records)
+        prefs.edit().putString(KEY_TARGETS, json).apply()
     }
 
     fun wipeDatabase() {
+        synchronized(cachedRecords) {
+            cachedRecords.clear()
+        }
         prefs.edit().remove(KEY_TARGETS).apply()
+    }
+
+    fun exportDataBundle(): String {
+        val records = getAllRecords()
+        val isoFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
+            timeZone = TimeZone.getTimeZone("UTC")
+        }
+        val bundle = ConsoleBundle(
+            format = "target-intelligence-console",
+            version = 1,
+            exportedAt = isoFormat.format(Date()),
+            targets = records,
+            ingests = emptyList()
+        )
+        val exportGson = GsonBuilder()
+            .setPrettyPrinting()
+            .serializeNulls()
+            .create()
+        return exportGson.toJson(bundle)
+    }
+
+    fun importDataBundle(jsonString: String): ImportResult {
+        val bundle = try {
+            gson.fromJson(jsonString, ConsoleBundle::class.java)
+        } catch (e: Exception) {
+            throw IllegalArgumentException("Invalid JSON format: ${e.message}", e)
+        }
+
+        if (bundle == null || bundle.format != "target-intelligence-console" || bundle.version != 1) {
+            throw IllegalArgumentException("This is not a Target Intelligence Console export.")
+        }
+
+        val importedTargets = bundle.targets ?: emptyList()
+        val importedIngests = bundle.ingests ?: emptyList()
+
+        val currentRecords = getAllRecords().toMutableList()
+        val recordMap = currentRecords.associateBy { it.ip }.toMutableMap()
+
+        for (imported in importedTargets) {
+            val ip = imported.ip
+            if (ip.isBlank()) continue
+
+            val existing = recordMap[ip]
+            if (existing != null) {
+                val merged = mergeRecords(existing, imported)
+                recordMap[ip] = merged
+            } else {
+                val previousMatch = recordMap.values.find { candidate ->
+                    (imported.username != null && candidate.username != null && candidate.username.equals(imported.username, ignoreCase = true)) ||
+                    (imported.wallets.isNotEmpty() && candidate.wallets.any { imported.wallets.contains(it) })
+                }
+
+                if (previousMatch != null) {
+                    val merged = mergeRecords(previousMatch, imported)
+                    merged.ip = if (!imported.isMasked && previousMatch.isMasked) imported.ip else merged.ip
+                    recordMap.remove(previousMatch.ip)
+                    recordMap[merged.ip] = merged
+                } else {
+                    recordMap[ip] = imported
+                }
+            }
+        }
+
+        for (ingest in importedIngests) {
+            val raw = ingest.raw
+            if (raw.isNullOrEmpty()) continue
+            when (ingest.type) {
+                "logs" -> {
+                    val lines = raw.lines()
+                    val updates = HackExParser.parseMyLogs(lines).ifEmpty { HackExParser.parseVictimLogs(lines) }
+                    applyUpdatesToMap(recordMap, updates)
+                }
+                "home" -> {
+                    val homeScreen = HackExParser.parseHomeScreen(raw)
+                    if (homeScreen != null) {
+                        applyHomeScreenToMap(recordMap, homeScreen)
+                    }
+                }
+                "software" -> {
+                    val softwareScreen = HackExParser.parseSoftwareScreen(raw)
+                    if (softwareScreen != null) {
+                        applySoftwareScreenToMap(recordMap, softwareScreen)
+                    }
+                }
+            }
+        }
+
+        saveAllRecords(recordMap.values.toList())
+        reconcileDatabase()
+
+        return ImportResult(importedTargets.size, importedIngests.size)
     }
 
     fun processUpdates(updates: List<HackExParser.ParsedUpdate>) {
         if (updates.isEmpty()) return
-        
         val currentRecords = getAllRecords().toMutableList()
         val recordMap = currentRecords.associateBy { it.ip }.toMutableMap()
+        applyUpdatesToMap(recordMap, updates)
+        saveAllRecords(recordMap.values.toList())
+        reconcileDatabase()
+    }
 
+    private fun applyUpdatesToMap(recordMap: MutableMap<String, TargetRecord>, updates: List<HackExParser.ParsedUpdate>) {
         for (update in updates) {
             val ip = update.ip
             if (ip.isEmpty()) continue
@@ -47,7 +174,6 @@ object DatabaseManager {
             }
 
             if (update.wallet != null) {
-                // If another record owns this wallet, merge them
                 val previousOwner = recordMap.values.find { it.ip != ip && it.wallets.contains(update.wallet) }
                 if (previousOwner != null) {
                     val merged = mergeRecords(record, previousOwner)
@@ -69,15 +195,17 @@ object DatabaseManager {
                 )
             }
         }
-        
-        saveAllRecords(recordMap.values.toList())
-        reconcileDatabase()
     }
 
     fun processHomeScreen(homeScreen: HackExParser.HomeScreen) {
         val currentRecords = getAllRecords().toMutableList()
         val recordMap = currentRecords.associateBy { it.ip }.toMutableMap()
-        
+        applyHomeScreenToMap(recordMap, homeScreen)
+        saveAllRecords(recordMap.values.toList())
+        reconcileDatabase()
+    }
+
+    private fun applyHomeScreenToMap(recordMap: MutableMap<String, TargetRecord>, homeScreen: HackExParser.HomeScreen) {
         var record = recordMap[homeScreen.ip]
         if (record == null) {
             record = TargetRecord(ip = homeScreen.ip)
@@ -91,10 +219,8 @@ object DatabaseManager {
         homeScreen.encryptor?.let { record.encryptor = it }
         
         recordMap[homeScreen.ip] = record
-        saveAllRecords(recordMap.values.toList())
-        reconcileDatabase()
     }
-    
+
     fun editTargetIp(oldIp: String, newIp: String) {
         val currentRecords = getAllRecords().toMutableList()
         val existing = currentRecords.find { it.ip == oldIp } ?: return
@@ -126,7 +252,13 @@ object DatabaseManager {
         if (softwareScreen.softwareItems.isEmpty()) return
         val currentRecords = getAllRecords().toMutableList()
         val recordMap = currentRecords.associateBy { it.ip }.toMutableMap()
-        
+        applySoftwareScreenToMap(recordMap, softwareScreen)
+        saveAllRecords(recordMap.values.toList())
+        reconcileDatabase()
+    }
+
+    private fun applySoftwareScreenToMap(recordMap: MutableMap<String, TargetRecord>, softwareScreen: HackExParser.SoftwareScreen) {
+        if (softwareScreen.softwareItems.isEmpty()) return
         val username = softwareScreen.username
         var targetRecord: TargetRecord? = null
         
@@ -143,9 +275,6 @@ object DatabaseManager {
         softwareScreen.softwareItems.forEach { (name, item) ->
             targetRecord.downloads[name] = SoftwareEntry(item.level, item.status, null)
         }
-        
-        saveAllRecords(recordMap.values.toList())
-        reconcileDatabase()
     }
 
     fun processWalletScreen(walletScreen: HackExParser.WalletScreen) {
@@ -163,7 +292,6 @@ object DatabaseManager {
             recordMap[newIp] = targetRecord
         }
 
-        // Merge if another record owns this wallet
         val previousOwner = recordMap.values.find { it.ip != targetRecord.ip && it.wallets.contains(wallet) }
         if (previousOwner != null) {
             val merged = mergeRecords(targetRecord, previousOwner)
@@ -220,7 +348,7 @@ object DatabaseManager {
                     records[i] = merged
                     records.removeAt(j)
                     changed = true
-                    j-- // Re-check this index since we removed an element
+                    j--
                 }
                 j++
             }

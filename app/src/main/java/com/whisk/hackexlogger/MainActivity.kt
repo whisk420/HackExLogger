@@ -15,26 +15,76 @@ import android.text.TextWatcher
 import android.view.View
 import android.widget.Button
 import android.widget.EditText
-import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.RecyclerView
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class MainActivity : AppCompatActivity() {
 
-    private lateinit var fullAdapter: TargetAdapter
-    private lateinit var partialAdapter: TargetAdapter
+    private lateinit var targetAdapter: TargetAdapter
     private var currentSearchQuery = ""
     private var isPartialVisible = false
+    private var searchJob: Job? = null
 
     private val dataUpdateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             android.util.Log.d("DOSSIER", "MainActivity received broadcast: ${intent.action}")
             if (intent.action == "com.whisk.hackexlogger.DATA_UPDATED") {
                 refreshData()
+            }
+        }
+    }
+
+    private val exportLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri: Uri? ->
+        if (uri != null) {
+            try {
+                val jsonString = DatabaseManager.exportDataBundle()
+                contentResolver.openOutputStream(uri)?.use { outputStream ->
+                    outputStream.write(jsonString.toByteArray(Charsets.UTF_8))
+                }
+                Toast.makeText(this, "Export successful", Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) {
+                Toast.makeText(this, "Export failed: ${e.message}", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private val importLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        if (uri != null) {
+            try {
+                val jsonString = contentResolver.openInputStream(uri)?.use { inputStream ->
+                    inputStream.bufferedReader(Charsets.UTF_8).readText()
+                }
+                if (jsonString.isNullOrEmpty()) {
+                    Toast.makeText(this, "File is empty", Toast.LENGTH_SHORT).show()
+                    return@registerForActivityResult
+                }
+                val result = DatabaseManager.importDataBundle(jsonString)
+                refreshData()
+                Toast.makeText(
+                    this,
+                    "Imported ${result.targetCount} targets and ${result.ingestCount} archived ingests.",
+                    Toast.LENGTH_LONG
+                ).show()
+            } catch (e: Exception) {
+                androidx.appcompat.app.AlertDialog.Builder(this)
+                    .setTitle("Import Failed")
+                    .setMessage(e.message ?: "Failed to import data.")
+                    .setPositiveButton("OK", null)
+                    .show()
             }
         }
     }
@@ -59,29 +109,22 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupUI() {
-        fullAdapter = TargetAdapter(this::onEditTarget, this::onDeleteTarget)
-        partialAdapter = TargetAdapter(this::onEditTarget, this::onDeleteTarget)
+        targetAdapter = TargetAdapter(this::onEditTarget, this::onDeleteTarget, this::onTogglePartial)
+        findViewById<RecyclerView>(R.id.targetsRecycler).adapter = targetAdapter
 
-        findViewById<RecyclerView>(R.id.fullTargetsRecycler).adapter = fullAdapter
-        findViewById<RecyclerView>(R.id.partialTargetsRecycler).adapter = partialAdapter
+        findViewById<Button>(R.id.exportDataBtn).setOnClickListener {
+            val dateStr = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+            exportLauncher.launch("target_console_$dateStr.json")
+        }
+
+        findViewById<Button>(R.id.importDataBtn).setOnClickListener {
+            importLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
+        }
 
         findViewById<Button>(R.id.wipeDbBtn).setOnClickListener {
             DatabaseManager.wipeDatabase()
             refreshData()
             Toast.makeText(this, "Database wiped", Toast.LENGTH_SHORT).show()
-        }
-
-        val partialToggle = findViewById<TextView>(R.id.partialTargetsToggle)
-        val partialRecycler = findViewById<RecyclerView>(R.id.partialTargetsRecycler)
-        partialToggle.setOnClickListener {
-            isPartialVisible = !isPartialVisible
-            if (isPartialVisible) {
-                partialToggle.text = "▲ PARTIAL / MASKED TARGETS"
-                partialRecycler.visibility = View.VISIBLE
-            } else {
-                partialToggle.text = "▼ PARTIAL / MASKED TARGETS"
-                partialRecycler.visibility = View.GONE
-            }
         }
 
         val searchInput = findViewById<EditText>(R.id.searchInput)
@@ -90,7 +133,11 @@ class MainActivity : AppCompatActivity() {
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
             override fun afterTextChanged(s: Editable?) {
                 currentSearchQuery = s?.toString()?.trim()?.lowercase() ?: ""
-                refreshData()
+                searchJob?.cancel()
+                searchJob = lifecycleScope.launch {
+                    delay(150)
+                    refreshData()
+                }
             }
         })
 
@@ -99,68 +146,85 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun onTogglePartial() {
+        isPartialVisible = !isPartialVisible
+        refreshData()
+    }
+
     private fun refreshData() {
-        android.util.Log.d("DOSSIER", "Refreshing UI with latest Database records...")
-        var allRecords = DatabaseManager.getAllRecords()
-        
-        if (currentSearchQuery.isNotEmpty()) {
-            val query = currentSearchQuery.lowercase()
-            
-            // 1. Try to parse as "software + level" (e.g. "spam 10", "spam lv10", "spam lv. 10", "spam10")
-            val swMatch = Regex("""^(.*?)\s*(?:lv\.?|lvl\.?)?\s*(\d+)$""", RegexOption.IGNORE_CASE).find(query)
-            var swFilteredRecords: List<TargetRecord>? = null
-            
-            if (swMatch != null) {
-                val swName = swMatch.groupValues[1].trim()
-                val targetLevel = swMatch.groupValues[2].toIntOrNull()
+        lifecycleScope.launch(Dispatchers.Default) {
+            val allRecords = DatabaseManager.getAllRecords()
+            var filtered = allRecords
+
+            if (currentSearchQuery.isNotEmpty()) {
+                val query = currentSearchQuery.lowercase()
                 
-                if (swName.isNotEmpty() && targetLevel != null) {
-                    fun getMatching(levels: List<Int>): List<TargetRecord> {
-                        return allRecords.filter { record ->
-                            record.downloads.any { (k, v) ->
-                                k.lowercase().contains(swName) && levels.contains(v.level)
+                val swMatch = Regex("""^(.*?)\s*(?:lv\.?|lvl\.?)?\s*(\d+)$""", RegexOption.IGNORE_CASE).find(query)
+                var swFilteredRecords: List<TargetRecord>? = null
+                
+                if (swMatch != null) {
+                    val swName = swMatch.groupValues[1].trim()
+                    val targetLevel = swMatch.groupValues[2].toIntOrNull()
+                    
+                    if (swName.isNotEmpty() && targetLevel != null) {
+                        fun getMatching(levels: List<Int>): List<TargetRecord> {
+                            return allRecords.filter { record ->
+                                record.downloads.any { (k, v) ->
+                                    k.lowercase().contains(swName) && levels.contains(v.level)
+                                }
+                            }
+                        }
+                        
+                        val exactMatches = getMatching(listOf(targetLevel))
+                        if (exactMatches.isNotEmpty()) {
+                            swFilteredRecords = exactMatches
+                        } else {
+                            val plusMinusOne = getMatching(listOf(targetLevel - 1, targetLevel + 1).filter { it >= 1 })
+                            if (plusMinusOne.isNotEmpty()) {
+                                swFilteredRecords = plusMinusOne
+                            } else {
+                                val plusMinusTwo = getMatching(listOf(targetLevel - 2, targetLevel + 2).filter { it >= 1 })
+                                swFilteredRecords = plusMinusTwo
                             }
                         }
                     }
-                    
-                    val exactMatches = getMatching(listOf(targetLevel))
-                    if (exactMatches.isNotEmpty()) {
-                        swFilteredRecords = exactMatches
-                    } else {
-                        // Expand by +/- 1, clamping minimum to 1
-                        val plusMinusOne = getMatching(listOf(targetLevel - 1, targetLevel + 1).filter { it >= 1 })
-                        if (plusMinusOne.isNotEmpty()) {
-                            swFilteredRecords = plusMinusOne
-                        } else {
-                            // Expand by +/- 2, clamping minimum to 1
-                            val plusMinusTwo = getMatching(listOf(targetLevel - 2, targetLevel + 2).filter { it >= 1 })
-                            swFilteredRecords = plusMinusTwo // Empty if still nothing found
-                        }
-                    }
+                }
+
+                val genericFiltered = allRecords.filter { record ->
+                    record.ip.lowercase().contains(query) ||
+                    record.username?.lowercase()?.contains(query) == true ||
+                    record.wallets.any { it.lowercase().contains(query) } ||
+                    record.downloads.keys.any { it.lowercase().contains(query) }
+                }
+                
+                filtered = if (swFilteredRecords != null) {
+                    (swFilteredRecords + genericFiltered).distinctBy { it.ip }
+                } else {
+                    genericFiltered
                 }
             }
 
-            // 2. Generic string matching (IP, User, Wallet fragments, Software names)
-            val genericFiltered = allRecords.filter { record ->
-                record.ip.lowercase().contains(query) ||
-                record.username?.lowercase()?.contains(query) == true ||
-                record.wallets.any { it.lowercase().contains(query) } ||
-                record.downloads.keys.any { it.lowercase().contains(query) }
-            }
-            
-            // Combine both filter strategies so typing "192.168" (parsed as sw=192., lvl=168) still works
-            allRecords = if (swFilteredRecords != null) {
-                (swFilteredRecords + genericFiltered).distinctBy { it.ip }
+            val fullTargets = filtered.filter { !it.isMasked }.sortedBy { it.ip }
+            val partialTargets = filtered.filter { it.isMasked }.sortedBy { it.ip }
+
+            val items = mutableListOf<ListItem>()
+            items.add(ListItem.Header("FULL TARGETS (${fullTargets.size})"))
+            fullTargets.forEach { items.add(ListItem.Target(it)) }
+
+            val partialHeaderTitle = if (isPartialVisible) {
+                "▲ PARTIAL / MASKED TARGETS (${partialTargets.size})"
             } else {
-                genericFiltered
+                "▼ PARTIAL / MASKED TARGETS (${partialTargets.size})"
+            }
+            items.add(ListItem.Header(partialHeaderTitle, isPartialHeader = true, isExpanded = isPartialVisible))
+            if (isPartialVisible) {
+                partialTargets.forEach { items.add(ListItem.Target(it)) }
+            }
+
+            withContext(Dispatchers.Main) {
+                targetAdapter.submitList(items)
             }
         }
-
-        val fullTargets = allRecords.filter { !it.isMasked }.sortedBy { it.ip }
-        val partialTargets = allRecords.filter { it.isMasked }.sortedBy { it.ip }
-
-        fullAdapter.submitList(fullTargets)
-        partialAdapter.submitList(partialTargets)
     }
 
     override fun onDestroy() {
@@ -170,14 +234,12 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        // Re-check permissions when coming back from settings
         if (Settings.canDrawOverlays(this) && isAccessibilityServiceEnabled()) {
             startService(Intent(this, OverlayService::class.java))
         }
     }
 
     private fun checkPermissionsAndStart() {
-        // 1. Check Overlay Permission
         if (!Settings.canDrawOverlays(this)) {
             Toast.makeText(this, "Please grant 'Display over other apps' permission", Toast.LENGTH_LONG).show()
             val intent = Intent(
@@ -188,7 +250,6 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        // 2. Check Accessibility Permission
         if (!isAccessibilityServiceEnabled()) {
             Toast.makeText(this, "Please enable the HackExLogger Accessibility Service", Toast.LENGTH_LONG).show()
             val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
@@ -196,7 +257,6 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        // Both granted, start overlay
         startService(Intent(this, OverlayService::class.java))
     }
 

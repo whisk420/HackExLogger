@@ -3,37 +3,96 @@ package com.whisk.hackexlogger
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.graphics.Color
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
+import androidx.recyclerview.widget.DiffUtil
+import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
+
+sealed class ListItem {
+    data class Header(
+        val title: String,
+        val isPartialHeader: Boolean = false,
+        val isExpanded: Boolean = false
+    ) : ListItem()
+
+    data class Target(
+        val target: TargetRecord
+    ) : ListItem()
+}
+
+class ListItemDiffCallback : DiffUtil.ItemCallback<ListItem>() {
+    override fun areItemsTheSame(oldItem: ListItem, newItem: ListItem): Boolean {
+        return when {
+            oldItem is ListItem.Header && newItem is ListItem.Header -> oldItem.isPartialHeader == newItem.isPartialHeader
+            oldItem is ListItem.Target && newItem is ListItem.Target -> oldItem.target.ip == newItem.target.ip
+            else -> false
+        }
+    }
+
+    override fun areContentsTheSame(oldItem: ListItem, newItem: ListItem): Boolean {
+        return oldItem == newItem
+    }
+}
 
 class TargetAdapter(
     private val onEdit: (TargetRecord) -> Unit,
-    private val onDelete: (TargetRecord) -> Unit
-) : RecyclerView.Adapter<TargetAdapter.TargetViewHolder>() {
+    private val onDelete: (TargetRecord) -> Unit,
+    private val onTogglePartial: () -> Unit
+) : ListAdapter<ListItem, RecyclerView.ViewHolder>(ListItemDiffCallback()) {
 
-    private var targets = listOf<TargetRecord>()
-
-    fun submitList(newTargets: List<TargetRecord>) {
-        targets = newTargets
-        notifyDataSetChanged()
+    companion object {
+        private const val TYPE_HEADER = 0
+        private const val TYPE_TARGET = 1
     }
 
-    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): TargetViewHolder {
-        val view = LayoutInflater.from(parent.context).inflate(R.layout.item_target, parent, false)
-        return TargetViewHolder(view, onEdit, onDelete)
+    override fun getItemViewType(position: Int): Int {
+        return when (getItem(position)) {
+            is ListItem.Header -> TYPE_HEADER
+            is ListItem.Target -> TYPE_TARGET
+        }
     }
 
-    override fun onBindViewHolder(holder: TargetViewHolder, position: Int) {
-        val target = targets[position]
-        holder.bind(target)
+    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
+        val inflater = LayoutInflater.from(parent.context)
+        return if (viewType == TYPE_HEADER) {
+            val view = inflater.inflate(R.layout.item_header, parent, false)
+            HeaderViewHolder(view, onTogglePartial)
+        } else {
+            val view = inflater.inflate(R.layout.item_target, parent, false)
+            TargetViewHolder(view, onEdit, onDelete)
+        }
     }
 
-    override fun getItemCount(): Int = targets.size
+    override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
+        when (val item = getItem(position)) {
+            is ListItem.Header -> (holder as HeaderViewHolder).bind(item)
+            is ListItem.Target -> (holder as TargetViewHolder).bind(item.target)
+        }
+    }
+
+    class HeaderViewHolder(
+        itemView: View,
+        private val onTogglePartial: () -> Unit
+    ) : RecyclerView.ViewHolder(itemView) {
+        private val titleText: TextView = itemView.findViewById(R.id.headerTitle)
+
+        fun bind(header: ListItem.Header) {
+            titleText.text = header.title
+            if (header.isPartialHeader) {
+                titleText.setTextColor(Color.parseColor("#fbbf24"))
+                itemView.setOnClickListener { onTogglePartial() }
+            } else {
+                titleText.setTextColor(Color.parseColor("#60a5fa"))
+                itemView.setOnClickListener(null)
+            }
+        }
+    }
 
     class TargetViewHolder(
         itemView: View,
@@ -66,7 +125,6 @@ class TargetAdapter(
         fun bind(target: TargetRecord) {
             ipText.text = target.ip
 
-            // Set up clicks
             ipText.setOnClickListener {
                 copyToClipboard("IP Address", target.ip)
             }
@@ -74,7 +132,6 @@ class TargetAdapter(
             deleteBtn.setOnClickListener { onDelete(target) }
             shareBtn.setOnClickListener { shareTarget(target) }
 
-            // Metadata Row
             val metaParts = mutableListOf<String>()
             target.username?.let { metaParts.add("USER: $it") }
             target.clan?.let { metaParts.add("CLAN: [$it]") }
@@ -86,7 +143,6 @@ class TargetAdapter(
             metaText.text = metaParts.joinToString(" • ")
             metaText.visibility = if (metaParts.isEmpty()) View.GONE else View.VISIBLE
 
-            // Wallets
             if (target.wallets.isNotEmpty()) {
                 walletsText.text = target.wallets.joinToString("\n") { "WALLET: $it" }
                 walletsText.visibility = View.VISIBLE
@@ -94,7 +150,6 @@ class TargetAdapter(
                 walletsText.visibility = View.GONE
             }
 
-            // Software
             if (target.downloads.isNotEmpty()) {
                 val swStr = target.downloads.entries.joinToString("\n") { (name, data) ->
                     val icon = softwareIcons[name] ?: "📦"
