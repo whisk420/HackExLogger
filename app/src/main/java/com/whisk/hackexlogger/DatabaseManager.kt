@@ -200,7 +200,7 @@ object DatabaseManager {
             when (ingest.type) {
                 "logs" -> {
                     val lines = raw.lines()
-                    val updates = HackExParser.parseMyLogs(lines).ifEmpty { HackExParser.parseVictimLogs(lines) }
+                    val updates = HackExParser.parseLogs(lines)
                     applyUpdatesToMap(recordMap, updates)
                 }
                 "home" -> {

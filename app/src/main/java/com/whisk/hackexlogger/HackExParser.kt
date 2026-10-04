@@ -97,81 +97,17 @@ object HackExParser {
     }
 
     /**
-     * Parses activity lines from the player's own HackEx log screen.
+     * Parses log lines from a log screen
      *
      * @param rawLines List of text lines extracted from the log UI.
      * @return List of [ParsedUpdate] entries.
      */
-    fun parseMyLogs(rawLines: List<String>): List<ParsedUpdate> {
-        var currentAccessedIp: String? = null
-        val updates = mutableListOf<ParsedUpdate>()
-
-        for (i in rawLines.indices.reversed()) {
-            val line = rawLines[i].trim()
-            if (line.isEmpty()) continue
-
-            val timeMatch = Regex("""^\[([^\]]+)\]""").find(line)
-            val time = timeMatch?.groupValues?.get(1)
-            val isAccessed = line.contains("Accessed device at")
-            val explicitIp = extractIp(line)
-
-            if (isAccessed && explicitIp != null) {
-                currentAccessedIp = explicitIp
-                updates.add(ParsedUpdate(ip = explicitIp, time = time, raw = line))
-                continue
-            }
-
-            var stolenWallet: String? = null
-            if (line.contains("Stole") && line.contains("from ")) {
-                val wMatch = Regex("""from\s+([a-zA-Z0-9.]{6,})""").find(line)
-                if (wMatch != null) stolenWallet = shortenWallet(wMatch.groupValues[1])
-            }
-
-            val softMatch = Regex("""(Downloaded|Uploaded|Downloading|Uploading)\s+Lv(\d+)\s+(.+?)(?:\s+(?:from|to)\b|\.\.\.|$)""", RegexOption.IGNORE_CASE).find(line)
-            var software: Software? = null
-            var isOwned = false
-
-            if (softMatch != null) {
-                val action = softMatch.groupValues[1].lowercase()
-                software = Software(
-                    action = action,
-                    level = softMatch.groupValues[2].toIntOrNull() ?: 0,
-                    name = softMatch.groupValues[3].trim()
-                )
-                isOwned = action.startsWith("download")
-            }
-
-            val targetIp = explicitIp ?: currentAccessedIp
-            if (targetIp != null) {
-                updates.add(
-                    ParsedUpdate(
-                        ip = targetIp,
-                        time = time,
-                        wallet = if (stolenWallet != null && targetIp == currentAccessedIp) stolenWallet else null,
-                        software = software,
-                        isOwnedSoftware = isOwned,
-                        raw = line
-                    )
-                )
-            }
-        }
-        return updates
-    }
-
-    /**
-     * Parses log lines from a target/victim device log screen in HackEx.
-     *
-     * @param rawLines List of text lines extracted from the log UI.
-     * @return List of [ParsedUpdate] entries.
-     */
-    fun parseVictimLogs(rawLines: List<String>): List<ParsedUpdate> {
+    fun parseLogs(rawLines: List<String>): List<ParsedUpdate> {
         val updates = mutableListOf<ParsedUpdate>()
         var lastAccessIp: String? = null
-        var lastAccessEventMinute: Int? = null
 
         val validLines = rawLines.filter { line ->
-            if (line.trim().length <= 1) false
-            else Regex("""^\[[0-9]{1,2}-[0-9]{1,2}\s+[0-9]{1,2}:[0-9]{2}\]""").containsMatchIn(line.trim())
+            line.trim().isNotEmpty() && Regex("""^\[.+?\]""").containsMatchIn(line.trim())
         }
 
         for (i in validLines.indices.reversed()) {
@@ -180,42 +116,18 @@ object HackExParser {
 
             val timeMatch = Regex("""^\[([^\]]+)\]""").find(line)
             val time = timeMatch?.groupValues?.get(1)
-            
-            var eventMinute: Int? = null
-            if (time != null) {
-                val timeParts = Regex("""^(\d{1,2})-(\d{1,2})\s+(\d{1,2}):(\d{2})$""").find(time)
-                if (timeParts != null) {
-                    val mm = timeParts.groupValues[1].toInt()
-                    val dd = timeParts.groupValues[2].toInt()
-                    val hh = timeParts.groupValues[3].toInt()
-                    val min = timeParts.groupValues[4].toInt()
-                    eventMinute = (((mm * 31 + dd) * 24 + hh) * 60 + min)
-                }
-            }
 
             if (line.contains("[UNKNOWN]")) {
                 lastAccessIp = null
-                lastAccessEventMinute = null
                 continue
             }
 
-            val accessedMatch = Regex("""Device accessed from\s+((?:(?:\d{1,3}|xxx)\.){3}(?:\d{1,3}|xxx))""", RegexOption.IGNORE_CASE).find(line)
-            if (accessedMatch != null) {
-                val ip = extractIp(accessedMatch.groupValues[1])
+            // Catch "Device accessed from IP" or "Accessed device at IP"
+            val accessMatch = Regex("""(?:Device accessed from|Accessed device at)\s+((?:(?:\d{1,3}|xxx)\.){3}(?:\d{1,3}|xxx))""", RegexOption.IGNORE_CASE).find(line)
+            if (accessMatch != null) {
+                val ip = extractIp(accessMatch.groupValues[1])
                 if (ip != null && ip != "[UNKNOWN]") {
                     lastAccessIp = ip
-                    lastAccessEventMinute = eventMinute
-                    updates.add(ParsedUpdate(ip = ip, time = time, raw = line))
-                    continue
-                }
-            }
-
-            val accessAtMatch = Regex("""Accessed device at\s+((?:(?:\d{1,3}|xxx)\.){3}(?:\d{1,3}|xxx))""", RegexOption.IGNORE_CASE).find(line)
-            if (accessAtMatch != null) {
-                val ip = extractIp(accessAtMatch.groupValues[1])
-                if (ip != null) {
-                    lastAccessIp = ip
-                    lastAccessEventMinute = eventMinute
                     updates.add(ParsedUpdate(ip = ip, time = time, raw = line))
                     continue
                 }
@@ -224,90 +136,56 @@ object HackExParser {
             var action: String? = null
             var level: Int? = null
             var softwareName: String? = null
-            var targetIp: String? = null
+            var targetIp: String? = extractIp(line)
             var isOwned = false
 
-            val fromMatch = Regex("""(Downloaded|Uploaded|Downloading|Uploading)\s+Lv(\d+)\s+(.+?)\s+from\s+((?:(?:\d{1,3}|xxx)\.){3}(?:\d{1,3}|xxx))""", RegexOption.IGNORE_CASE).find(line)
-            val toMatch = Regex("""(Downloaded|Uploaded|Downloading|Uploading)\s+Lv(\d+)\s+(.+?)\s+to\s+((?:(?:\d{1,3}|xxx)\.){3}(?:\d{1,3}|xxx))""", RegexOption.IGNORE_CASE).find(line)
-            var softMatch: MatchResult? = null
-
-            if (fromMatch != null) {
-                action = fromMatch.groupValues[1].lowercase()
-                level = fromMatch.groupValues[2].toIntOrNull()
-                softwareName = fromMatch.groupValues[3].trim()
-                targetIp = extractIp(fromMatch.groupValues[4])
+            // Software Actions
+            val softMatch = Regex("""(Downloaded|Uploaded|Downloading|Uploading)\s+Lv(\d+)\s+(.+?)(?:\s+(?:from|to)\b|\.|\.\.|\s*$)""", RegexOption.IGNORE_CASE).find(line)
+            if (softMatch != null) {
+                action = softMatch.groupValues[1].lowercase()
+                level = softMatch.groupValues[2].toIntOrNull()
+                softwareName = softMatch.groupValues[3].trim()
                 isOwned = action.startsWith("download")
-            } else if (toMatch != null) {
-                action = toMatch.groupValues[1].lowercase()
-                level = toMatch.groupValues[2].toIntOrNull()
-                softwareName = toMatch.groupValues[3].trim()
-                targetIp = extractIp(toMatch.groupValues[4])
-                isOwned = action.startsWith("download")
-            } else {
-                softMatch = Regex("""(Downloaded|Uploaded|Downloading|Uploading)\s+Lv(\d+)\s+(.+?)(?:\s+(?:from|to)\b|\.|\.\.|\s*$)""", RegexOption.IGNORE_CASE).find(line)
-                if (softMatch != null) {
-                    action = softMatch.groupValues[1].lowercase()
-                    level = softMatch.groupValues[2].toIntOrNull()
-                    softwareName = softMatch.groupValues[3].trim()
-                    isOwned = action.startsWith("download")
-                    
-                    val ipFromLine = extractIp(line)
-                    if (ipFromLine != null && !line.contains("[UNKNOWN]")) {
-                        targetIp = ipFromLine
-                    }
-                }
             }
 
-            if (softMatch == null && fromMatch == null && toMatch == null) {
-                val byMatch = Regex("""by\s+((?:(?:\d{1,3}|xxx)\.){3}(?:\d{1,3}|xxx))""", RegexOption.IGNORE_CASE).find(line)
-                if (byMatch != null) {
-                    targetIp = extractIp(byMatch.groupValues[1])
-                }
+            // Fallback to the last accessed IP if no explicit IP is in the line
+            if (targetIp == null && lastAccessIp != null) {
+                targetIp = lastAccessIp
             }
 
+            // Wallets
             val walletMatch = Regex("""(?:Stole\s+\d[\d,]*\s+Crypto\s+from|\d[\d,]*\s+Crypto\s+transferred\s+to)\s+([a-zA-Z0-9.]{6,})""", RegexOption.IGNORE_CASE).find(line)
-            if (walletMatch != null) {
-                val withinCorrelationWindow = lastAccessEventMinute != null && eventMinute != null &&
-                        eventMinute >= lastAccessEventMinute && eventMinute - lastAccessEventMinute <= 2
-                
-                if (withinCorrelationWindow && lastAccessIp != null) {
-                    updates.add(ParsedUpdate(ip = lastAccessIp, time = time, wallet = shortenWallet(walletMatch.groupValues[1]), raw = line))
-                }
+            if (walletMatch != null && targetIp != null) {
+                updates.add(ParsedUpdate(ip = targetIp, time = time, wallet = shortenWallet(walletMatch.groupValues[1]), raw = line))
                 continue
             }
 
-            val transferMatch = Regex("""(\d+)\s+Crypto\s+transferred\s+to\s+([a-zA-Z0-9.]{6,})""").find(line)
-            if (transferMatch != null) {
-                updates.add(ParsedUpdate(ip = targetIp ?: "", time = time, wallet = shortenWallet(transferMatch.groupValues[2]), raw = line))
-                continue
-            }
-
+            // Cracking / Firewall
             val crackMatch = Regex("""(Cracking|Cracked)\s+password\s+(?:on\s+)?((?:(?:\d{1,3}|xxx)\.){3}(?:\d{1,3}|xxx))""", RegexOption.IGNORE_CASE).find(line)
             if (crackMatch != null) {
-                targetIp = extractIp(crackMatch.groupValues[2])
-                updates.add(ParsedUpdate(ip = targetIp ?: "", time = time, raw = line))
+                val ip = extractIp(crackMatch.groupValues[2])
+                updates.add(ParsedUpdate(ip = ip ?: (targetIp ?: ""), time = time, raw = line))
                 continue
             }
 
             val firewallMatch = Regex("""(Bypassed|Failed to bypass)\s+firewall\s+(?:on\s+)?((?:(?:\d{1,3}|xxx)\.){3}(?:\d{1,3}|xxx))""", RegexOption.IGNORE_CASE).find(line)
             if (firewallMatch != null) {
-                targetIp = extractIp(firewallMatch.groupValues[2])
-                updates.add(ParsedUpdate(ip = targetIp ?: "", time = time, raw = line))
+                val ip = extractIp(firewallMatch.groupValues[2])
+                updates.add(ParsedUpdate(ip = ip ?: (targetIp ?: ""), time = time, raw = line))
                 continue
             }
 
-            if (softMatch != null || fromMatch != null || toMatch != null) {
-                if (targetIp != null && !line.contains("[UNKNOWN]")) {
-                    updates.add(
-                        ParsedUpdate(
-                            ip = targetIp,
-                            time = time,
-                            software = if (action != null && level != null && softwareName != null) Software(action, level, softwareName) else null,
-                            isOwnedSoftware = isOwned,
-                            raw = line
-                        )
+            // Add software update if found
+            if (softMatch != null && targetIp != null && !line.contains("[UNKNOWN]")) {
+                updates.add(
+                    ParsedUpdate(
+                        ip = targetIp,
+                        time = time,
+                        software = if (action != null && level != null && softwareName != null) Software(action, level, softwareName) else null,
+                        isOwnedSoftware = isOwned,
+                        raw = line
                     )
-                }
+                )
             }
         }
         return updates

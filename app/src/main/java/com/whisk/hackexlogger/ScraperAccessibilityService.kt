@@ -97,18 +97,11 @@ class ScraperAccessibilityService : AccessibilityService() {
             DatabaseManager.processWalletScreen(walletScreen)
         }
 
-        // Attempt parsing for Victim/Target device log screens
-        val victimLogs = HackExParser.parseVictimLogs(allLines)
-        if (victimLogs.isNotEmpty()) {
-            Log.d("DOSSIER", "Parsed ${victimLogs.size} Victim Logs")
-            DatabaseManager.processUpdates(victimLogs)
-        }
-
-        // Attempt parsing for Player's own activity log screens
-        val myLogs = HackExParser.parseMyLogs(allLines)
-        if (myLogs.isNotEmpty()) {
-            Log.d("DOSSIER", "Parsed ${myLogs.size} My Logs")
-            DatabaseManager.processUpdates(myLogs)
+        // Attempt parsing for Game Activity Log screens
+        val logUpdates = HackExParser.parseLogs(allLines)
+        if (logUpdates.isNotEmpty()) {
+            Log.d("DOSSIER", "Parsed ${logUpdates.size} Log Updates")
+            DatabaseManager.processUpdates(logUpdates)
         }
         
         // Notify MainActivity to update the target list UI
