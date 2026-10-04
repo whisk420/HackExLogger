@@ -1,0 +1,60 @@
+package com.whisk.hackexlogger
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Test
+
+/**
+ * Unit tests for the HackEx text parsing engine.
+ * 
+ * Demonstrates how developers can build out the test suite for core logic
+ * without impacting the production APK size (as tests are stripped from release).
+ */
+class HackExParserTest {
+
+    @Test
+    fun testIpExtraction() {
+        val standardIp = HackExParser.extractIp("Found target at 192.168.1.100 today")
+        assertEquals("192.168.1.100", standardIp)
+
+        val maskedIp = HackExParser.extractIp("Device accessed from 10.20.xxx.xxx")
+        assertEquals("10.20.xxx.xxx", maskedIp)
+        
+        val unknownIp = HackExParser.extractIp("Device accessed from [UNKNOWN]")
+        assertEquals(null, unknownIp)
+    }
+
+    @Test
+    fun testShortenWallet() {
+        val wallet = "hx1234567890abcdef"
+        val shortened = HackExParser.shortenWallet(wallet)
+        assertEquals("hx1234...cdef", shortened)
+        
+        val alreadyShort = "hx1234"
+        assertEquals("hx1234", HackExParser.shortenWallet(alreadyShort))
+    }
+
+    @Test
+    fun testParseHomeScreen() {
+        val simulatedScreenText = """
+            IP 10.0.0.55
+            > Pizaaparty [XYZ]
+            LVL 25
+            DEVICE Raider II
+            NETWORK Cable
+            FIREWALL Lv. 10
+            ENCRYPTOR Lv. 5
+        """.trimIndent()
+
+        val result = HackExParser.parseHomeScreen(simulatedScreenText)
+        assertNotNull(result)
+        
+        assertEquals("10.0.0.55", result?.ip)
+        assertEquals("Pizaaparty", result?.username)
+        assertEquals("XYZ", result?.clan)
+        assertEquals(25, result?.level)
+        assertEquals("Raider II • Cable", result?.hardware)
+        assertEquals(10, result?.firewall)
+        assertEquals(5, result?.encryptor)
+    }
+}
