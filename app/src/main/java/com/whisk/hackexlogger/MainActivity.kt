@@ -32,6 +32,13 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+/**
+ * Main Activity dashboard for HackExLogger.
+ *
+ * Provides a UI for browsing, searching, editing, and managing collected target data.
+ * Also handles JSON data bundle import/export via Android Storage Access Framework
+ * and guides users to enable required overlay and accessibility permissions.
+ */
 class MainActivity : AppCompatActivity() {
 
     private lateinit var targetAdapter: TargetAdapter
@@ -39,6 +46,7 @@ class MainActivity : AppCompatActivity() {
     private var isPartialVisible = false
     private var searchJob: Job? = null
 
+    // Listens for local broadcasts emitted when new data is parsed by the background accessibility service
     private val dataUpdateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             android.util.Log.d("DOSSIER", "MainActivity received broadcast: ${intent.action}")
@@ -48,6 +56,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // Activity result launcher for exporting database records as a JSON document
     private val exportLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri: Uri? ->
         if (uri != null) {
             try {
@@ -62,6 +71,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // Activity result launcher for importing database records from a JSON file
     private val importLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         if (uri != null) {
             try {
@@ -99,12 +109,14 @@ class MainActivity : AppCompatActivity() {
             insets
         }
 
+        // Initialize local database storage
         DatabaseManager.init(this)
         setupUI()
         
+        // Register local broadcast receiver for UI data update events
         registerReceiver(dataUpdateReceiver, IntentFilter("com.whisk.hackexlogger.DATA_UPDATED"), RECEIVER_NOT_EXPORTED)
 
-        checkPermissionsAndStart()
+        showPermissionDialog(force = false)
         refreshData()
     }
 
@@ -112,28 +124,37 @@ class MainActivity : AppCompatActivity() {
         targetAdapter = TargetAdapter(this::onEditTarget, this::onDeleteTarget, this::onTogglePartial)
         findViewById<RecyclerView>(R.id.targetsRecycler).adapter = targetAdapter
 
+        // Validation mode toggle button
         findViewById<Button>(R.id.validateBtn).setOnClickListener {
-            val intent = Intent(this, OverlayService::class.java).apply {
-                action = OverlayService.ACTION_TOGGLE_VALIDATION
+            if (Settings.canDrawOverlays(this) && isAccessibilityServiceEnabled()) {
+                val intent = Intent(this, OverlayService::class.java).apply {
+                    action = OverlayService.ACTION_TOGGLE_VALIDATION
+                }
+                startService(intent)
+            } else {
+                showPermissionDialog(force = true)
             }
-            startService(intent)
         }
 
+        // Export data bundle button
         findViewById<Button>(R.id.exportDataBtn).setOnClickListener {
             val dateStr = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
             exportLauncher.launch("target_console_$dateStr.json")
         }
 
+        // Import data bundle button
         findViewById<Button>(R.id.importDataBtn).setOnClickListener {
             importLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
         }
 
+        // Wipe local database button
         findViewById<Button>(R.id.wipeDbBtn).setOnClickListener {
             DatabaseManager.wipeDatabase()
             refreshData()
             Toast.makeText(this, "Database wiped", Toast.LENGTH_SHORT).show()
         }
 
+        // Debounced search text watcher
         val searchInput = findViewById<EditText>(R.id.searchInput)
         searchInput.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
@@ -158,6 +179,9 @@ class MainActivity : AppCompatActivity() {
         refreshData()
     }
 
+    /**
+     * Filters stored target records based on search criteria and posts the formatted list to RecyclerView.
+     */
     private fun refreshData() {
         lifecycleScope.launch(Dispatchers.Default) {
             val allRecords = DatabaseManager.getAllRecords()
@@ -166,6 +190,7 @@ class MainActivity : AppCompatActivity() {
             if (currentSearchQuery.isNotEmpty()) {
                 val query = currentSearchQuery.lowercase()
                 
+                // Parse software name and level search expressions (e.g. "firewall 10", "siphon lv5")
                 val swMatch = Regex("""^(.*?)\s*(?:lv\.?|lvl\.?)?\s*(\d+)$""", RegexOption.IGNORE_CASE).find(query)
                 var swFilteredRecords: List<TargetRecord>? = null
                 
@@ -246,27 +271,54 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun checkPermissionsAndStart() {
-        if (!Settings.canDrawOverlays(this)) {
-            Toast.makeText(this, "Please grant 'Display over other apps' permission", Toast.LENGTH_LONG).show()
-            val intent = Intent(
-                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                Uri.parse("package:$packageName")
-            )
-            startActivity(intent)
+    /**
+     * Checks if overlay and accessibility permissions are granted, prompting user via a dialog if needed.
+     */
+    private fun showPermissionDialog(force: Boolean) {
+        val hasOverlay = Settings.canDrawOverlays(this)
+        val hasAccessibility = isAccessibilityServiceEnabled()
+
+        if (hasOverlay && hasAccessibility) {
+            startService(Intent(this, OverlayService::class.java))
             return
         }
 
-        if (!isAccessibilityServiceEnabled()) {
-            Toast.makeText(this, "Please enable the HackExLogger Accessibility Service", Toast.LENGTH_LONG).show()
-            val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-            startActivity(intent)
+        val prefs = getSharedPreferences("AppPrefs", Context.MODE_PRIVATE)
+        val hideWarning = prefs.getBoolean("hide_permission_warning", false)
+
+        if (!force && hideWarning) {
             return
         }
 
-        startService(Intent(this, OverlayService::class.java))
+        val builder = androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Scraper Permissions Required")
+            .setMessage("To use the on-screen scraping overlay and validation tools, HackExLogger requires the 'Display over other apps' and 'Accessibility' permissions.\n\nYou can skip this if you only want to view or import data.")
+            .setPositiveButton("Enable") { _, _ ->
+                if (!hasOverlay) {
+                    val intent = Intent(
+                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        Uri.parse("package:$packageName")
+                    )
+                    startActivity(intent)
+                } else {
+                    val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                    startActivity(intent)
+                }
+            }
+            .setNegativeButton("Not Now", null)
+
+        if (!force) {
+            builder.setNeutralButton("Don't Ask Again") { _, _ ->
+                prefs.edit().putBoolean("hide_permission_warning", true).apply()
+            }
+        }
+
+        builder.show()
     }
 
+    /**
+     * Helper method to check if the app's [ScraperAccessibilityService] is enabled in Android settings.
+     */
     private fun isAccessibilityServiceEnabled(): Boolean {
         val expectedComponentName = ComponentName(this, ScraperAccessibilityService::class.java)
         val enabledServicesSetting = Settings.Secure.getString(

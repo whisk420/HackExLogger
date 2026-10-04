@@ -1,16 +1,27 @@
 package com.whisk.hackexlogger
 
+/**
+ * Utility object containing regular expressions and string parser functions
+ * for extracting game entities (IPs, usernames, clans, firewall levels, software levels,
+ * and crypto wallets) from text scraped from the HackEx game interface and logs.
+ */
 object HackExParser {
     
     private val REGEX_IP = Regex("""\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b""")
     private val REGEX_MASKED_IP = Regex("""\b(?:\d{1,3}|xxx)\.(?:\d{1,3}|xxx)\.(?:\d{1,3}|xxx)\.(?:\d{1,3}|xxx)\b""")
 
+    /**
+     * Parsed software item detail.
+     */
     data class Software(
         val action: String,
         val level: Int,
         val name: String
     )
 
+    /**
+     * Data update parsed from a HackEx log line.
+     */
     data class ParsedUpdate(
         val ip: String,
         val time: String?,
@@ -20,6 +31,9 @@ object HackExParser {
         val raw: String
     )
 
+    /**
+     * Parsed details from a HackEx target profile home screen.
+     */
     data class HomeScreen(
         val ip: String,
         val username: String?,
@@ -30,21 +44,33 @@ object HackExParser {
         val encryptor: Int?
     )
 
+    /**
+     * Software item parsed from a target software screen.
+     */
     data class SoftwareScreenItem(
         val level: Int,
         val status: String
     )
 
+    /**
+     * Parsed software screen inventory for a target user.
+     */
     data class SoftwareScreen(
         val username: String?,
         val softwareItems: Map<String, SoftwareScreenItem>
     )
 
+    /**
+     * Wallet details parsed from a target wallet screen.
+     */
     data class WalletScreen(
         val username: String,
         val wallet: String
     )
     
+    /**
+     * Truncates long wallet address strings for UI display (e.g., "hx1234...5678").
+     */
     fun shortenWallet(wallet: String): String {
         if (wallet.length > 10 && !wallet.contains("...")) {
             return wallet.take(6) + "..." + wallet.takeLast(4)
@@ -52,6 +78,12 @@ object HackExParser {
         return wallet
     }
     
+    /**
+     * Searches a string for an IP address or masked IP address matching HackEx formatting patterns.
+     *
+     * @param text Raw text containing potential IP addresses.
+     * @return Extracted IP address string, or null if no match found.
+     */
     fun extractIp(text: String): String? {
         if (text.contains("[UNKNOWN]")) return null
         
@@ -64,6 +96,12 @@ object HackExParser {
         return null
     }
 
+    /**
+     * Parses activity lines from the player's own HackEx log screen.
+     *
+     * @param rawLines List of text lines extracted from the log UI.
+     * @return List of [ParsedUpdate] entries.
+     */
     fun parseMyLogs(rawLines: List<String>): List<ParsedUpdate> {
         var currentAccessedIp: String? = null
         val updates = mutableListOf<ParsedUpdate>()
@@ -120,6 +158,12 @@ object HackExParser {
         return updates
     }
 
+    /**
+     * Parses log lines from a target/victim device log screen in HackEx.
+     *
+     * @param rawLines List of text lines extracted from the log UI.
+     * @return List of [ParsedUpdate] entries.
+     */
     fun parseVictimLogs(rawLines: List<String>): List<ParsedUpdate> {
         val updates = mutableListOf<ParsedUpdate>()
         var lastAccessIp: String? = null
@@ -269,6 +313,10 @@ object HackExParser {
         return updates
     }
 
+    /**
+     * Parses target stats (IP, username, clan, level, hardware, firewall, encryptor) from raw text
+     * scraped from a HackEx profile/home screen.
+     */
     fun parseHomeScreen(text: String): HomeScreen? {
         val ipMatch = Regex("""IP\s+([0-9]{1,3}(?:\.[0-9]{1,3}|\.xxx){3})""", RegexOption.IGNORE_CASE).find(text)
         if (ipMatch == null) return null
@@ -312,6 +360,9 @@ object HackExParser {
         return HomeScreen(ip, username, clan, level, hardware, firewall, encryptor)
     }
 
+    /**
+     * Parses installed software levels from text scraped from a HackEx software screen.
+     */
     fun parseSoftwareScreen(text: String): SoftwareScreen? {
         val userMatch = Regex("""^([^\r\n]+?)['’]s installed software\s*$""", setOf(RegexOption.MULTILINE, RegexOption.IGNORE_CASE)).find(text)
         val username = userMatch?.groupValues?.get(1)?.trim()
@@ -336,6 +387,9 @@ object HackExParser {
         return SoftwareScreen(username, softwareItems)
     }
 
+    /**
+     * Parses username and wallet address from text scraped from a HackEx wallet screen.
+     */
     fun parseWalletScreen(text: String): WalletScreen? {
         val userMatch = Regex("""^([^\r\n]+?)['’]s wallet\s*$""", setOf(RegexOption.MULTILINE, RegexOption.IGNORE_CASE)).find(text)
         val username = userMatch?.groupValues?.get(1)?.trim()

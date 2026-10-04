@@ -4,6 +4,9 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Test
 
+/**
+ * Unit tests verifying JSON data bundle import, export, and schema validation.
+ */
 class ConsoleBundleTest {
 
     @Test

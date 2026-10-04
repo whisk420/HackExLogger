@@ -8,8 +8,17 @@ import android.content.IntentFilter
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
-import android.os.Build
 
+/**
+ * On-demand UI screen reader service utilizing Android's Accessibility APIs.
+ *
+ * This service is used strictly as a helper tool for the HackEx game. When explicit scraping
+ * is requested by the user (via the floating overlay button), it reads the current on-screen text
+ * nodes from the active window, parses HackEx game elements (such as target IPs, software levels,
+ * and game logs), updates the local on-device database, and notifies the UI.
+ *
+ * Passive accessibility event tracking is ignored; execution only occurs on manual user trigger.
+ */
 class ScraperAccessibilityService : AccessibilityService() {
 
     private val triggerReceiver = object : BroadcastReceiver() {
@@ -25,11 +34,12 @@ class ScraperAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         Log.d("DOSSIER", "Accessibility Service successfully Connected to OS")
         val filter = IntentFilter(ACTION_TRIGGER_SCRAPE)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(triggerReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            registerReceiver(triggerReceiver, filter)
-        }
+        androidx.core.content.ContextCompat.registerReceiver(
+            this,
+            triggerReceiver,
+            filter,
+            androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED
+        )
     }
 
     override fun onDestroy() {
@@ -38,12 +48,16 @@ class ScraperAccessibilityService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        // We only scrape on demand via broadcast, ignore passive events
+        // Passive accessibility events are intentionally ignored to save resources;
+        // scraping is triggered strictly on-demand by the user via local broadcast.
     }
 
     override fun onInterrupt() {
     }
 
+    /**
+     * Inspects the active window node hierarchy, extracts visible text, and parses game entity details.
+     */
     private fun scrapeAndParse() {
         Log.d("DOSSIER", "scrapeAndParse() called. Attempting to get root window...")
         val rootNode = rootInActiveWindow
@@ -59,50 +73,54 @@ class ScraperAccessibilityService : AccessibilityService() {
         Log.d("DOSSIER", "Scraped ${extractedTextList.size} text nodes.")
         Log.d("DOSSIER_RAW", "--- RAW SCRAPED TEXT START ---\n$combinedText\n--- RAW SCRAPED TEXT END ---")
         
-        // Break the UI text block into actual lines for the parsers
+        // Split extracted UI text into discrete lines for log parsing
         val allLines = combinedText.split(Regex("""\r?\n"""))
 
-        // Try parsing as HomeScreen
+        // Attempt parsing for HackEx Home/Profile screen format
         val homeScreen = HackExParser.parseHomeScreen(combinedText)
         if (homeScreen != null) {
             Log.d("DOSSIER", "Parsed HomeScreen: $homeScreen")
             DatabaseManager.processHomeScreen(homeScreen)
         }
 
-        // Try parsing as Software Screen
+        // Attempt parsing for HackEx Software screen format
         val softwareScreen = HackExParser.parseSoftwareScreen(combinedText)
         if (softwareScreen != null) {
             Log.d("DOSSIER", "Parsed SoftwareScreen: $softwareScreen")
             DatabaseManager.processSoftwareScreen(softwareScreen)
         }
 
-        // Try parsing as Wallet Screen
+        // Attempt parsing for HackEx Wallet screen format
         val walletScreen = HackExParser.parseWalletScreen(combinedText)
         if (walletScreen != null) {
             Log.d("DOSSIER", "Parsed WalletScreen: $walletScreen")
             DatabaseManager.processWalletScreen(walletScreen)
         }
 
-        // Try parsing as Victim/My logs
+        // Attempt parsing for Victim/Target device log screens
         val victimLogs = HackExParser.parseVictimLogs(allLines)
         if (victimLogs.isNotEmpty()) {
             Log.d("DOSSIER", "Parsed ${victimLogs.size} Victim Logs")
             DatabaseManager.processUpdates(victimLogs)
         }
 
+        // Attempt parsing for Player's own activity log screens
         val myLogs = HackExParser.parseMyLogs(allLines)
         if (myLogs.isNotEmpty()) {
             Log.d("DOSSIER", "Parsed ${myLogs.size} My Logs")
             DatabaseManager.processUpdates(myLogs)
         }
         
-        // Notify UI to refresh
+        // Notify MainActivity to update the target list UI
         Log.d("DOSSIER", "Sending DATA_UPDATED broadcast to UI")
         val updateIntent = Intent("com.whisk.hackexlogger.DATA_UPDATED")
         updateIntent.setPackage(packageName)
         sendBroadcast(updateIntent)
     }
 
+    /**
+     * Recursively traverses accessibility node trees to gather all rendered text strings.
+     */
     private fun extractText(node: AccessibilityNodeInfo, list: MutableList<String>) {
         if (node.text != null) {
             list.add(node.text.toString())

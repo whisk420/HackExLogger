@@ -22,6 +22,13 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
 
+/**
+ * Foreground Service responsible for presenting draggable floating overlay controls over the screen.
+ *
+ * Provides two main modes:
+ * 1. Floating Quick-Scrape Button: A camera icon button that sends a trigger broadcast to [ScraperAccessibilityService] to capture on-screen game text.
+ * 2. Target Validation Mode Toolbar: A floating toolbar that iterates through unvalidated targets, automatically copies their IP addresses to the clipboard, and allows marking targets valid or deleting invalid records.
+ */
 class OverlayService : Service() {
 
     companion object {
@@ -36,6 +43,9 @@ class OverlayService : Service() {
     private var isValidating = false
     private var currentValidatingTarget: TargetRecord? = null
     private var validationView: View? = null
+
+    private var isCloseTargetVisible = false
+    private var closeTargetView: TextView? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -63,6 +73,9 @@ class OverlayService : Service() {
         return START_STICKY
     }
 
+    /**
+     * Initializes the floating camera trigger button widget using WindowManager overlay parameters.
+     */
     private fun setupCameraFloatingButton() {
         cameraFloatingButton = Button(this).apply {
             text = "📸"
@@ -97,22 +110,46 @@ class OverlayService : Service() {
         var initialTouchX = 0f
         var initialTouchY = 0f
 
+        // Touch listener enables dragging the overlay button anywhere on screen
         cameraFloatingButton.setOnTouchListener { view, event ->
+            val displayMetrics = resources.displayMetrics
+            val closeThresholdY = displayMetrics.heightPixels - (150 * displayMetrics.density)
+
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
                     initialX = params.x
                     initialY = params.y
                     initialTouchX = event.rawX
                     initialTouchY = event.rawY
+                    showCloseTarget()
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
                     params.x = initialX + (event.rawX - initialTouchX).toInt()
                     params.y = initialY + (event.rawY - initialTouchY).toInt()
                     windowManager.updateViewLayout(cameraFloatingButton, params)
+                    
+                    if (event.rawY > closeThresholdY) {
+                        closeTargetView?.background = android.graphics.drawable.GradientDrawable().apply {
+                            shape = android.graphics.drawable.GradientDrawable.OVAL
+                            setColor(Color.parseColor("#CCFF0000")) // Semi-transparent red highlight
+                        }
+                    } else {
+                        closeTargetView?.background = android.graphics.drawable.GradientDrawable().apply {
+                            shape = android.graphics.drawable.GradientDrawable.OVAL
+                            setColor(Color.parseColor("#80000000")) // Semi-transparent black default
+                        }
+                    }
                     true
                 }
                 MotionEvent.ACTION_UP -> {
+                    hideCloseTarget()
+                    
+                    if (event.rawY > closeThresholdY) {
+                        stopSelf()
+                        return@setOnTouchListener true
+                    }
+                    
                     val diffX = Math.abs(event.rawX - initialTouchX)
                     val diffY = Math.abs(event.rawY - initialTouchY)
                     if (diffX < 10 && diffY < 10) {
@@ -124,6 +161,7 @@ class OverlayService : Service() {
             }
         }
 
+        // Tapping the floating button triggers an on-demand screen scrape
         cameraFloatingButton.setOnClickListener {
             val scrapeIntent = Intent(ScraperAccessibilityService.ACTION_TRIGGER_SCRAPE)
             scrapeIntent.setPackage(packageName)
@@ -133,6 +171,9 @@ class OverlayService : Service() {
         windowManager.addView(cameraFloatingButton, params)
     }
 
+    /**
+     * Activates the floating target validation toolbar overlay.
+     */
     private fun startValidationMode() {
         if (isValidating) {
             loadNextValidationTarget()
@@ -214,6 +255,9 @@ class OverlayService : Service() {
         loadNextValidationTarget()
     }
 
+    /**
+     * Loads the next target record to validate and automatically copies its IP address to clipboard.
+     */
     private fun loadNextValidationTarget() {
         val next = DatabaseManager.getNextRecordToValidate()
         if (next == null) {
@@ -232,6 +276,9 @@ class OverlayService : Service() {
         Toast.makeText(this, "Copied IP: ${next.ip}", Toast.LENGTH_SHORT).show()
     }
 
+    /**
+     * Dismisses the validation toolbar and restores the quick-scrape button.
+     */
     private fun stopValidationMode() {
         isValidating = false
         currentValidatingTarget = null
@@ -240,7 +287,7 @@ class OverlayService : Service() {
             try {
                 windowManager.removeView(it)
             } catch (e: Exception) {
-                // Ignore if already removed
+                // Ignore if view was already removed
             }
             validationView = null
         }
@@ -250,12 +297,57 @@ class OverlayService : Service() {
         }
     }
 
+    private fun showCloseTarget() {
+        if (isCloseTargetVisible) return
+        if (closeTargetView == null) {
+            closeTargetView = TextView(this).apply {
+                text = "✖"
+                textSize = 24f
+                setTextColor(Color.WHITE)
+                gravity = Gravity.CENTER
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    shape = android.graphics.drawable.GradientDrawable.OVAL
+                    setColor(Color.parseColor("#80000000"))
+                }
+            }
+        }
+        
+        val size = (60 * resources.displayMetrics.density).toInt()
+        val params = WindowManager.LayoutParams(
+            size,
+            size,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+            y = (50 * resources.displayMetrics.density).toInt()
+        }
+        
+        windowManager.addView(closeTargetView, params)
+        isCloseTargetVisible = true
+    }
+
+    private fun hideCloseTarget() {
+        if (!isCloseTargetVisible) return
+        closeTargetView?.let {
+            try { windowManager.removeView(it) } catch (e: Exception) {}
+        }
+        isCloseTargetVisible = false
+    }
+
+    /**
+     * Broadcasts a notification to update MainActivity's target display adapter.
+     */
     private fun notifyDataUpdated() {
         val updateIntent = Intent("com.whisk.hackexlogger.DATA_UPDATED")
         updateIntent.setPackage(packageName)
         sendBroadcast(updateIntent)
     }
 
+    /**
+     * Creates a low-priority notification channel required for foreground overlay services on Android.
+     */
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel("OverlayServiceChannel", "Overlay Service", NotificationManager.IMPORTANCE_LOW)
@@ -274,6 +366,7 @@ class OverlayService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        hideCloseTarget()
         if (::cameraFloatingButton.isInitialized) {
             try { windowManager.removeView(cameraFloatingButton) } catch (e: Exception) {}
         }

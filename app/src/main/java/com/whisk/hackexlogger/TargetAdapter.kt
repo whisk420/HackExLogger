@@ -14,6 +14,9 @@ import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
 
+/**
+ * Sealed class representing list items displayed in the targets RecyclerView (Headers vs Target Cards).
+ */
 sealed class ListItem {
     data class Header(
         val title: String,
@@ -26,6 +29,9 @@ sealed class ListItem {
     ) : ListItem()
 }
 
+/**
+ * DiffUtil callback for efficient list item updates and animations in [TargetAdapter].
+ */
 class ListItemDiffCallback : DiffUtil.ItemCallback<ListItem>() {
     override fun areItemsTheSame(oldItem: ListItem, newItem: ListItem): Boolean {
         return when {
@@ -40,6 +46,9 @@ class ListItemDiffCallback : DiffUtil.ItemCallback<ListItem>() {
     }
 }
 
+/**
+ * RecyclerView adapter for displaying headers and HackEx target records.
+ */
 class TargetAdapter(
     private val onEdit: (TargetRecord) -> Unit,
     private val onDelete: (TargetRecord) -> Unit,

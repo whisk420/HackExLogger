@@ -10,6 +10,12 @@ import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 
+/**
+ * Local data manager for persisting, querying, merging, and exporting HackEx target records.
+ *
+ * All data is saved strictly on-device in app-private [SharedPreferences] using JSON serialization.
+ * Thread-safe synchronization ensures safe access between background services and UI components.
+ */
 object DatabaseManager {
     private const val PREFS_NAME = "HackExDB"
     private const val KEY_TARGETS = "targets"
@@ -19,6 +25,11 @@ object DatabaseManager {
     private val cachedRecords = mutableListOf<TargetRecord>()
     @Volatile private var isInitialized = false
 
+    /**
+     * Initializes the local storage manager and populates the in-memory cache from private preferences.
+     *
+     * @param context Application or activity context.
+     */
     fun init(context: Context) {
         if (!isInitialized) {
             prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -27,6 +38,9 @@ object DatabaseManager {
         }
     }
 
+    /**
+     * Deserializes target records stored in app-private [SharedPreferences] into memory.
+     */
     private fun loadCacheFromDisk() {
         val json = prefs.getString(KEY_TARGETS, "[]")
         val type = object : TypeToken<List<TargetRecord>>() {}.type
@@ -39,6 +53,11 @@ object DatabaseManager {
         }
     }
 
+    /**
+     * Retrieves a thread-safe deep copy of all currently stored target records.
+     *
+     * @return List of [TargetRecord] objects.
+     */
     fun getAllRecords(): List<TargetRecord> {
         if (!isInitialized) return emptyList()
         synchronized(cachedRecords) {
@@ -46,6 +65,9 @@ object DatabaseManager {
         }
     }
 
+    /**
+     * Saves the provided target list to the in-memory cache and persists it to disk via [SharedPreferences].
+     */
     private fun saveAllRecords(records: List<TargetRecord>) {
         synchronized(cachedRecords) {
             cachedRecords.clear()
@@ -55,6 +77,9 @@ object DatabaseManager {
         prefs.edit().putString(KEY_TARGETS, json).apply()
     }
 
+    /**
+     * Clears all local target records from memory and app-private disk storage.
+     */
     fun wipeDatabase() {
         synchronized(cachedRecords) {
             cachedRecords.clear()
@@ -62,6 +87,10 @@ object DatabaseManager {
         prefs.edit().remove(KEY_TARGETS).apply()
     }
 
+    /**
+     * Finds the next unmasked target record that requires verification/validation in-game.
+     * Prioritizes unmasked targets that have never been validated, followed by the oldest validated.
+     */
     fun getNextRecordToValidate(): TargetRecord? {
         val unmaskedRecords = getAllRecords().filter { !it.isMasked }
         if (unmaskedRecords.isEmpty()) return null
@@ -74,14 +103,27 @@ object DatabaseManager {
         return unmaskedRecords.minByOrNull { it.lastValidated ?: "" }
     }
 
+    /**
+     * Sets the validation timestamp for the specified target IP to the current date and time.
+     *
+     * @param ip Target IP address.
+     */
     fun markValidated(ip: String) {
         val currentRecords = getAllRecords().toMutableList()
         val record = currentRecords.find { it.ip == ip } ?: return
-        val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)
-        record.lastValidated = sdf.format(Date())
+        record.lastValidated = getCurrentTimestamp()
         saveAllRecords(currentRecords)
     }
 
+    private fun getCurrentTimestamp(): String {
+        return SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(Date())
+    }
+
+    /**
+     * Exports all stored target data as a formatted JSON bundle for backup or migration.
+     *
+     * @return Pretty-printed JSON string conforming to [ConsoleBundle] schema.
+     */
     fun exportDataBundle(): String {
         val records = getAllRecords()
         val isoFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
@@ -101,6 +143,13 @@ object DatabaseManager {
         return exportGson.toJson(bundle)
     }
 
+    /**
+     * Imports a JSON bundle, merging new target records and updating existing entries.
+     *
+     * @param jsonString Serialized JSON bundle.
+     * @return [ImportResult] containing the count of processed targets and ingests.
+     * @throws IllegalArgumentException If JSON format or header schema is invalid.
+     */
     fun importDataBundle(jsonString: String): ImportResult {
         val bundle = try {
             gson.fromJson(jsonString, ConsoleBundle::class.java)
@@ -118,6 +167,7 @@ object DatabaseManager {
         val currentRecords = getAllRecords().toMutableList()
         val recordMap = currentRecords.associateBy { it.ip }.toMutableMap()
 
+        // Merge imported target records with existing database records
         for (imported in importedTargets) {
             val ip = imported.ip
             if (ip.isBlank()) continue
@@ -143,6 +193,7 @@ object DatabaseManager {
             }
         }
 
+        // Process raw ingests included in the bundle
         for (ingest in importedIngests) {
             val raw = ingest.raw
             if (raw.isNullOrEmpty()) continue
@@ -173,6 +224,11 @@ object DatabaseManager {
         return ImportResult(importedTargets.size, importedIngests.size)
     }
 
+    /**
+     * Applies parsed log updates to the database.
+     *
+     * @param updates List of [HackExParser.ParsedUpdate] instances from log scraping.
+     */
     fun processUpdates(updates: List<HackExParser.ParsedUpdate>) {
         if (updates.isEmpty()) return
         val currentRecords = getAllRecords().toMutableList()
@@ -217,6 +273,9 @@ object DatabaseManager {
         }
     }
 
+    /**
+     * Updates or creates a target record from parsed game home screen data.
+     */
     fun processHomeScreen(homeScreen: HackExParser.HomeScreen) {
         val currentRecords = getAllRecords().toMutableList()
         val recordMap = currentRecords.associateBy { it.ip }.toMutableMap()
@@ -237,10 +296,14 @@ object DatabaseManager {
         homeScreen.hardware?.let { record.hardware = it }
         homeScreen.firewall?.let { record.firewall = it }
         homeScreen.encryptor?.let { record.encryptor = it }
+        record.lastValidated = getCurrentTimestamp()
         
         recordMap[homeScreen.ip] = record
     }
 
+    /**
+     * Updates a target IP address in local storage and merges records if the new IP collides with an existing entry.
+     */
     fun editTargetIp(oldIp: String, newIp: String) {
         val currentRecords = getAllRecords().toMutableList()
         val existing = currentRecords.find { it.ip == oldIp } ?: return
@@ -262,12 +325,18 @@ object DatabaseManager {
         reconcileDatabase()
     }
     
+    /**
+     * Removes a target record from local storage by IP address.
+     */
     fun deleteTarget(ip: String) {
         val currentRecords = getAllRecords().toMutableList()
         currentRecords.removeAll { it.ip == ip }
         saveAllRecords(currentRecords)
     }
 
+    /**
+     * Updates or creates target record software inventory from parsed game software screen data.
+     */
     fun processSoftwareScreen(softwareScreen: HackExParser.SoftwareScreen) {
         if (softwareScreen.softwareItems.isEmpty()) return
         val currentRecords = getAllRecords().toMutableList()
@@ -295,8 +364,12 @@ object DatabaseManager {
         softwareScreen.softwareItems.forEach { (name, item) ->
             targetRecord.downloads[name] = SoftwareEntry(item.level, item.status, null)
         }
+        targetRecord.lastValidated = getCurrentTimestamp()
     }
 
+    /**
+     * Associates a parsed in-game crypto wallet address with a target user record.
+     */
     fun processWalletScreen(walletScreen: HackExParser.WalletScreen) {
         val currentRecords = getAllRecords().toMutableList()
         val recordMap = currentRecords.associateBy { it.ip }.toMutableMap()
@@ -324,11 +397,15 @@ object DatabaseManager {
         if (!targetRecord.wallets.contains(wallet)) {
             targetRecord.wallets.add(wallet)
         }
+        targetRecord.lastValidated = getCurrentTimestamp()
         
         saveAllRecords(recordMap.values.toList())
         reconcileDatabase()
     }
 
+    /**
+     * Merges non-null fields from an incoming record into a base target record.
+     */
     private fun mergeRecords(base: TargetRecord, incoming: TargetRecord): TargetRecord {
         val baseIsMasked = base.isMasked
         val incomingIsMasked = incoming.isMasked
@@ -348,6 +425,9 @@ object DatabaseManager {
         )
     }
 
+    /**
+     * Deduplicates database records by combining targets that share the same username or crypto wallet address.
+     */
     private fun reconcileDatabase() {
         val records = getAllRecords().toMutableList()
         if (records.size < 2) return
