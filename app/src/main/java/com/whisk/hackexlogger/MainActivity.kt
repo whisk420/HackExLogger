@@ -14,6 +14,9 @@ import android.text.TextUtils
 import android.text.TextWatcher
 import android.view.View
 import android.widget.Button
+import android.widget.SeekBar
+import android.widget.CheckBox
+import android.widget.TextView
 import android.widget.EditText
 import android.widget.Toast
 import androidx.activity.enableEdgeToEdge
@@ -44,6 +47,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var targetAdapter: TargetAdapter
     private var currentSearchQuery = ""
     private var isPartialVisible = false
+    private var isGoodSpamEnabled = false
+    private var maxFirewallLevel = 20
     private var searchJob: Job? = null
 
     // Listens for local broadcasts emitted when new data is parsed by the background accessibility service
@@ -154,6 +159,38 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "Database wiped", Toast.LENGTH_SHORT).show()
         }
 
+        // Good Spam Filter Setup
+        val goodSpamCheckBox = findViewById<CheckBox>(R.id.goodSpamCheckBox)
+        val maxFirewallLabel = findViewById<TextView>(R.id.maxFirewallLabel)
+        val maxFirewallSeekBar = findViewById<SeekBar>(R.id.maxFirewallSeekBar)
+        val maxFirewallValue = findViewById<TextView>(R.id.maxFirewallValue)
+
+        goodSpamCheckBox.setOnCheckedChangeListener { _, isChecked ->
+            isGoodSpamEnabled = isChecked
+            val visibility = if (isChecked) View.VISIBLE else View.GONE
+            maxFirewallLabel.visibility = visibility
+            maxFirewallSeekBar.visibility = visibility
+            maxFirewallValue.visibility = visibility
+            refreshData()
+        }
+
+        maxFirewallSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                maxFirewallLevel = progress
+                maxFirewallValue.text = progress.toString()
+                if (isGoodSpamEnabled) {
+                    searchJob?.cancel()
+                    searchJob = lifecycleScope.launch {
+                        delay(150)
+                        refreshData()
+                    }
+                }
+            }
+
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+        })
+
         // Debounced search text watcher
         val searchInput = findViewById<EditText>(R.id.searchInput)
         searchInput.addTextChangedListener(object : TextWatcher {
@@ -236,8 +273,28 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
-            val fullTargets = filtered.filter { !it.isMasked }.sortedBy { it.ip }
-            val partialTargets = filtered.filter { it.isMasked }.sortedBy { it.ip }
+            if (isGoodSpamEnabled) {
+                filtered = filtered.filter { record ->
+                    val fw = record.firewall ?: 0
+                    fw <= maxFirewallLevel
+                }.sortedByDescending { record ->
+                    val lvl = (record.level ?: 0).toDouble()
+                    val fw = (record.firewall ?: 0).toDouble()
+                    lvl - Math.pow(fw, 1.5)
+                }
+            }
+
+            val fullTargets = if (isGoodSpamEnabled) {
+                filtered.filter { !it.isMasked } // already sorted
+            } else {
+                filtered.filter { !it.isMasked }.sortedBy { it.ip }
+            }
+            
+            val partialTargets = if (isGoodSpamEnabled) {
+                filtered.filter { it.isMasked } // already sorted
+            } else {
+                filtered.filter { it.isMasked }.sortedBy { it.ip }
+            }
 
             val items = mutableListOf<ListItem>()
             items.add(ListItem.Header("FULL TARGETS (${fullTargets.size})"))
