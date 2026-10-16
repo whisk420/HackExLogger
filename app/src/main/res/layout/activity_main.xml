@@ -36,46 +36,14 @@
             android:textSize="12sp"
             android:textStyle="bold" />
 
-        <Button
-            android:id="@+id/importDataBtn"
-            android:layout_width="0dp"
+        <ImageButton
+            android:id="@+id/settingsBtn"
+            android:layout_width="36dp"
             android:layout_height="36dp"
-            android:layout_marginEnd="6dp"
-            android:layout_weight="1"
-            android:backgroundTint="#0284c7"
-            android:minHeight="0dp"
-            android:minWidth="0dp"
-            android:paddingHorizontal="8dp"
-            android:text="Import"
-            android:textColor="#ffffff"
-            android:textSize="12sp" />
-
-        <Button
-            android:id="@+id/exportDataBtn"
-            android:layout_width="0dp"
-            android:layout_height="36dp"
-            android:layout_marginEnd="6dp"
-            android:layout_weight="1"
-            android:backgroundTint="#0284c7"
-            android:minHeight="0dp"
-            android:minWidth="0dp"
-            android:paddingHorizontal="8dp"
-            android:text="Export"
-            android:textColor="#ffffff"
-            android:textSize="12sp" />
-
-        <Button
-            android:id="@+id/wipeDbBtn"
-            android:layout_width="0dp"
-            android:layout_height="36dp"
-            android:layout_weight="1"
-            android:backgroundTint="#dc2626"
-            android:minHeight="0dp"
-            android:minWidth="0dp"
-            android:paddingHorizontal="8dp"
-            android:text="Wipe"
-            android:textColor="#ffffff"
-            android:textSize="12sp" />
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Settings"
+            android:src="@android:drawable/ic_menu_preferences"
+            app:tint="#e2e8f0" />
     </LinearLayout>
 
     <EditText

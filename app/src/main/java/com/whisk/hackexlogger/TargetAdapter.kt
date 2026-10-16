@@ -8,6 +8,7 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.recyclerview.widget.DiffUtil
@@ -117,8 +118,9 @@ class TargetAdapter(
         private val deleteBtn: Button = itemView.findViewById(R.id.deleteBtn)
         private val metaText: TextView = itemView.findViewById(R.id.metaText)
         private val walletsText: TextView = itemView.findViewById(R.id.walletsText)
-        private val softwareText: TextView = itemView.findViewById(R.id.softwareText)
+        private val softwareContainer: LinearLayout = itemView.findViewById(R.id.softwareContainer)
         private val validatedText: TextView = itemView.findViewById(R.id.validatedText)
+        private val hardwareText: TextView = itemView.findViewById(R.id.hardwareText)
 
         private val softwareIcons = mapOf(
             "Antivirus" to "💉",
@@ -150,16 +152,29 @@ class TargetAdapter(
             deleteBtn.setOnClickListener { onDelete(target) }
             shareBtn.setOnClickListener { shareTarget(target) }
 
-            val metaParts = mutableListOf<String>()
-            target.username?.let { metaParts.add("USER: $it") }
-            target.clan?.let { metaParts.add("CLAN: [$it]") }
-            target.level?.let { metaParts.add("LVL: $it") }
-            target.hardware?.let { metaParts.add("HW: $it") }
-            target.firewall?.let { metaParts.add("🛡️ FW: Lv$it") }
-            target.encryptor?.let { metaParts.add("🔑 ENC: Lv$it") }
+            val metaParts1 = mutableListOf<String>()
+            val metaParts2 = mutableListOf<String>()
+            
+            target.username?.let { metaParts1.add("👤 $it") }
+            target.clan?.let { metaParts1.add("👥 [$it]") }
+            target.level?.let { metaParts1.add("LVL: $it") }
+            
+            target.firewall?.let { metaParts2.add("🛡️ FW: Lv$it") }
+            target.encryptor?.let { metaParts2.add("🔑 ENC: Lv$it") }
 
-            metaText.text = metaParts.joinToString(" • ")
-            metaText.visibility = if (metaParts.isEmpty()) View.GONE else View.VISIBLE
+            val fullMeta = mutableListOf<String>()
+            if (metaParts1.isNotEmpty()) fullMeta.add(metaParts1.joinToString(" • "))
+            if (metaParts2.isNotEmpty()) fullMeta.add(metaParts2.joinToString(" • "))
+
+            metaText.text = fullMeta.joinToString("\n")
+            metaText.visibility = if (fullMeta.isEmpty()) View.GONE else View.VISIBLE
+
+            if (target.hardware != null) {
+                hardwareText.text = "💻 ${target.hardware}"
+                hardwareText.visibility = View.VISIBLE
+            } else {
+                hardwareText.visibility = View.GONE
+            }
 
             if (target.wallets.isNotEmpty()) {
                 walletsText.text = target.wallets.joinToString("\n") { "WALLET: $it" }
@@ -169,14 +184,34 @@ class TargetAdapter(
             }
 
             if (target.downloads.isNotEmpty()) {
-                val swStr = target.downloads.entries.joinToString("\n") { (name, data) ->
+                softwareContainer.removeAllViews()
+                target.downloads.forEach { (name, data) ->
                     val icon = softwareIcons[name] ?: "📦"
-                    "$icon $name Lv${data.level}"
+                    
+                    val textView = TextView(itemView.context)
+                    textView.text = "$icon $name Lv${data.level}"
+                    textView.setTextColor(Color.parseColor("#38bdf8"))
+                    textView.textSize = 14f
+                    textView.setPadding(0, 4, 0, 4)
+                    
+                    val layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    )
+                    layoutParams.setMargins(0, 2, 0, 2)
+                    textView.layoutParams = layoutParams
+                    
+                    val backgroundParams = android.graphics.drawable.GradientDrawable()
+                    backgroundParams.setColor(Color.parseColor("#1e293b"))
+                    backgroundParams.cornerRadius = 8f
+                    textView.background = backgroundParams
+                    textView.setPadding(16, 8, 16, 8)
+                    
+                    softwareContainer.addView(textView)
                 }
-                softwareText.text = swStr
-                softwareText.visibility = View.VISIBLE
+                softwareContainer.visibility = View.VISIBLE
             } else {
-                softwareText.visibility = View.GONE
+                softwareContainer.visibility = View.GONE
             }
 
             if (target.lastValidated != null) {

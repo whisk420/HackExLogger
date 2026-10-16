@@ -18,6 +18,8 @@ import android.widget.SeekBar
 import android.widget.CheckBox
 import android.widget.TextView
 import android.widget.EditText
+import android.widget.ImageButton
+import android.widget.PopupMenu
 import android.widget.Toast
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -141,22 +143,34 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Export data bundle button
-        findViewById<Button>(R.id.exportDataBtn).setOnClickListener {
-            val dateStr = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
-            exportLauncher.launch("target_console_$dateStr.json")
-        }
+        // Settings popup menu
+        findViewById<ImageButton>(R.id.settingsBtn).setOnClickListener { view ->
+            val popup = PopupMenu(this, view)
+            popup.menu.add(0, 1, 0, "Export Data")
+            popup.menu.add(0, 2, 0, "Import Data")
+            popup.menu.add(0, 3, 0, "Wipe Database")
 
-        // Import data bundle button
-        findViewById<Button>(R.id.importDataBtn).setOnClickListener {
-            importLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
-        }
-
-        // Wipe local database button
-        findViewById<Button>(R.id.wipeDbBtn).setOnClickListener {
-            DatabaseManager.wipeDatabase()
-            refreshData()
-            Toast.makeText(this, "Database wiped", Toast.LENGTH_SHORT).show()
+            popup.setOnMenuItemClickListener { item ->
+                when (item.itemId) {
+                    1 -> {
+                        val dateStr = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+                        exportLauncher.launch("target_console_$dateStr.json")
+                        true
+                    }
+                    2 -> {
+                        importLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
+                        true
+                    }
+                    3 -> {
+                        DatabaseManager.wipeDatabase()
+                        refreshData()
+                        android.widget.Toast.makeText(this, "Database wiped", android.widget.Toast.LENGTH_SHORT).show()
+                        true
+                    }
+                    else -> false
+                }
+            }
+            popup.show()
         }
 
         // Good Spam Filter Setup
