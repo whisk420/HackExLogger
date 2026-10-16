@@ -36,6 +36,28 @@
             android:textSize="12sp"
             android:textStyle="bold" />
 
+        <!-- Knowledge Base Button (Temporarily disabled while formulas are being reworked) -->
+        <ImageButton
+            android:id="@+id/knowledgeBaseBtn"
+            android:layout_width="36dp"
+            android:layout_height="36dp"
+            android:layout_marginEnd="8dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Knowledge Base"
+            android:src="@android:drawable/ic_menu_agenda"
+            android:visibility="gone"
+            app:tint="#e2e8f0" />
+
+        <ImageButton
+            android:id="@+id/siphonAlertsBtn"
+            android:layout_width="36dp"
+            android:layout_height="36dp"
+            android:layout_marginEnd="8dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Siphon Alerts"
+            android:src="@android:drawable/ic_popup_reminder"
+            app:tint="#e2e8f0" />
+
         <ImageButton
             android:id="@+id/settingsBtn"
             android:layout_width="36dp"

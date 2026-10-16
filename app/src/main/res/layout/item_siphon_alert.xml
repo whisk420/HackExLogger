@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginBottom="12dp"
+    android:background="@drawable/bg_node_card"
+    android:orientation="vertical"
+    android:padding="12dp">
+
+    <TextView
+        android:id="@+id/ipText"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textColor="#fca5a5"
+        android:textSize="18sp"
+        android:textStyle="bold"
+        android:background="?android:attr/selectableItemBackground"
+        android:clickable="true"
+        android:focusable="true"
+        android:layout_marginBottom="12dp" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/reinstalledBtn"
+            android:layout_width="0dp"
+            android:layout_height="36dp"
+            android:layout_weight="1"
+            android:layout_marginEnd="6dp"
+            android:backgroundTint="#16a34a"
+            android:minHeight="0dp"
+            android:minWidth="0dp"
+            android:paddingHorizontal="4dp"
+            android:text="Siphon Re-installed"
+            android:textColor="#ffffff"
+            android:textSize="11sp" />
+
+        <Button
+            android:id="@+id/notFoundBtn"
+            android:layout_width="0dp"
+            android:layout_height="36dp"
+            android:layout_weight="1"
+            android:backgroundTint="#dc2626"
+            android:minHeight="0dp"
+            android:minWidth="0dp"
+            android:paddingHorizontal="4dp"
+            android:text="IP Not Found"
+            android:textColor="#ffffff"
+            android:textSize="11sp" />
+    </LinearLayout>
+
+</LinearLayout>

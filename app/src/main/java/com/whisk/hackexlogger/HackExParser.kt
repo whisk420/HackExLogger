@@ -67,6 +67,25 @@ object HackExParser {
         val username: String,
         val wallet: String
     )
+
+    /**
+     * Siphon details for an individual target.
+     */
+    data class SiphonItem(
+        val ip: String,
+        val level: Int,
+        val percent: String,
+        val amount: Int,
+        val timeAgo: String
+    )
+
+    /**
+     * Parsed Siphon Earnings screen data.
+     */
+    data class SiphonScreen(
+        val deployedCount: Int,
+        val items: List<SiphonItem>
+    )
     
     /**
      * Truncates long wallet address strings for UI display (e.g., "hx1234...5678").
@@ -200,21 +219,21 @@ object HackExParser {
         if (ipMatch == null) return null
         val ip = ipMatch.groupValues[1].trim()
 
-        val userLineMatch = Regex("""^>\s*(.+?)$""", RegexOption.MULTILINE).find(text)
+        val userLineMatch = Regex("""^[ \t]*>\s*(.+?)$""", RegexOption.MULTILINE).find(text)
         var username = userLineMatch?.groupValues?.get(1)?.trim()
 
         var clan: String? = null
         if (username != null) {
-            val clanMatch = Regex("""\[([a-zA-Z0-9_-]{2,6})\]""").find(username)
+            val clanMatch = Regex("""\[([^\]]{2,10})\]""").find(username)
             if (clanMatch != null) {
-                clan = clanMatch.groupValues[1]
+                clan = clanMatch.groupValues[1].trim()
                 username = username.replace(clanMatch.value, "").trim()
             }
             username = username.removeSuffix("_").trim()
         }
         
         if (clan == null) {
-            val genericClanMatch = Regex("""\[([a-zA-Z0-9_-]{2,6})\]""").find(text)
+            val genericClanMatch = Regex("""\[([^\]]{2,10})\]""").find(text)
             clan = genericClanMatch?.groupValues?.get(1)?.trim()
         }
 
@@ -279,5 +298,31 @@ object HackExParser {
             return WalletScreen(username, shortenWallet(rawWallet))
         }
         return null
+    }
+
+    /**
+     * Parses the Siphon Earnings screen to extract currently deployed siphons.
+     */
+    fun parseSiphonScreen(text: String): SiphonScreen? {
+        if (!text.contains("SIPHON EARNINGS")) return null
+
+        val deployedMatch = Regex("""DEPLOYED\s+(\d+)""").find(text)
+        val deployedCount = deployedMatch?.groupValues?.get(1)?.toIntOrNull() ?: 0
+
+        val items = mutableListOf<SiphonItem>()
+        // Match structure: IP, LV.x, y%, z siphoned, w ago
+        val pattern = Regex("""((?:\d{1,3}\.){3}\d{1,3})\s+LV\.(\d+)\s+([\d.]+[%])\s+([\d,]+)\s+siphoned\s+([a-zA-Z0-9]+ ago)""", RegexOption.IGNORE_CASE)
+        val matches = pattern.findAll(text)
+
+        for (match in matches) {
+            val ip = match.groupValues[1]
+            val level = match.groupValues[2].toIntOrNull() ?: 0
+            val percent = match.groupValues[3]
+            val amount = match.groupValues[4].replace(",", "").toIntOrNull() ?: 0
+            val timeAgo = match.groupValues[5]
+            items.add(SiphonItem(ip, level, percent, amount, timeAgo))
+        }
+
+        return SiphonScreen(deployedCount, items)
     }
 }

@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import com.google.gson.Gson
 import com.google.gson.GsonBuilder
 import com.google.gson.reflect.TypeToken
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -12,26 +13,32 @@ import java.util.TimeZone
 
 /**
  * Local data manager for persisting, querying, merging, and exporting HackEx target records.
- *
- * All data is saved strictly on-device in app-private [SharedPreferences] using JSON serialization.
- * Thread-safe synchronization ensures safe access between background services and UI components.
  */
 object DatabaseManager {
     private const val PREFS_NAME = "HackExDB"
     private const val KEY_TARGETS = "targets"
+    private const val KEY_SIPHON_ALERTS = "siphon_alerts"
+    private const val KEY_KNOWN_SIPHONS = "known_siphons"
     
     private lateinit var prefs: SharedPreferences
+    private lateinit var appContext: Context
     private val gson = Gson()
     private val cachedRecords = mutableListOf<TargetRecord>()
+    
+    // IP -> Amount Siphoned map
+    private val knownSiphons = mutableMapOf<String, Int>()
+    
+    // Set of IPs that were removed (alerted)
+    private val siphonAlerts = mutableSetOf<String>()
+    
     @Volatile private var isInitialized = false
 
     /**
      * Initializes the local storage manager and populates the in-memory cache from private preferences.
-     *
-     * @param context Application or activity context.
      */
     fun init(context: Context) {
         if (!isInitialized) {
+            appContext = context.applicationContext
             prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             loadCacheFromDisk()
             isInitialized = true
@@ -50,6 +57,22 @@ object DatabaseManager {
             if (loaded != null) {
                 cachedRecords.addAll(loaded)
             }
+        }
+        
+        val alertsJson = prefs.getString(KEY_SIPHON_ALERTS, "[]")
+        val alertsType = object : TypeToken<Set<String>>() {}.type
+        val loadedAlerts: Set<String>? = gson.fromJson(alertsJson, alertsType)
+        if (loadedAlerts != null) {
+            siphonAlerts.clear()
+            siphonAlerts.addAll(loadedAlerts)
+        }
+        
+        val siphonsJson = prefs.getString(KEY_KNOWN_SIPHONS, "{}")
+        val siphonsType = object : TypeToken<Map<String, Int>>() {}.type
+        val loadedSiphons: Map<String, Int>? = gson.fromJson(siphonsJson, siphonsType)
+        if (loadedSiphons != null) {
+            knownSiphons.clear()
+            knownSiphons.putAll(loadedSiphons)
         }
     }
 
@@ -75,6 +98,13 @@ object DatabaseManager {
         }
         val json = gson.toJson(records)
         prefs.edit().putString(KEY_TARGETS, json).apply()
+    }
+    
+    private fun saveSiphonData() {
+        prefs.edit()
+            .putString(KEY_SIPHON_ALERTS, gson.toJson(siphonAlerts))
+            .putString(KEY_KNOWN_SIPHONS, gson.toJson(knownSiphons))
+            .apply()
     }
 
     /**
@@ -401,6 +431,66 @@ object DatabaseManager {
         
         saveAllRecords(recordMap.values.toList())
         reconcileDatabase()
+    }
+
+    fun getSiphonAlerts(): List<String> {
+        return siphonAlerts.toList()
+    }
+    
+    fun removeSiphonAlert(ip: String) {
+        siphonAlerts.remove(ip)
+        saveSiphonData()
+    }
+
+    /**
+     * Processes a parsed Siphon Earnings screen, updates tracking, generates alerts, 
+     * and logs history to an exportable file.
+     */
+    fun processSiphonScreen(siphonScreen: HackExParser.SiphonScreen) {
+        if (siphonScreen.items.isEmpty()) return
+        
+        val currentScrapeIps = siphonScreen.items.map { it.ip }.toSet()
+        val isoFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply {
+            timeZone = TimeZone.getTimeZone("UTC")
+        }
+        val nowStr = isoFormat.format(Date())
+        
+        val exportFile = File(appContext.filesDir, "siphon_history.jsonl")
+        
+        // 1. Check for removed siphons
+        // Only safely assume items were wiped if we scanned a significant amount (e.g. >10 items or all items)
+        if (siphonScreen.items.size > 10 || siphonScreen.items.size >= (siphonScreen.deployedCount - 5)) {
+            val missingIps = knownSiphons.keys - currentScrapeIps
+            for (missingIp in missingIps) {
+                siphonAlerts.add(missingIp)
+                knownSiphons.remove(missingIp)
+                
+                // Log removal
+                val logLine = """{"timestamp":"$nowStr","ip":"$missingIp","event":"REMOVED"}"""
+                exportFile.appendText("$logLine\n")
+            }
+        }
+
+        // 2. Process current siphons and check for drops (wiped & reinstalled)
+        for (item in siphonScreen.items) {
+            val previousAmount = knownSiphons[item.ip]
+            
+            if (previousAmount != null && item.amount < previousAmount) {
+                // The amount went down: it was wiped and reinstalled!
+                siphonAlerts.add(item.ip)
+                val logLine = """{"timestamp":"$nowStr","ip":"${item.ip}","event":"REINSTALLED","old_amount":$previousAmount,"new_amount":${item.amount}}"""
+                exportFile.appendText("$logLine\n")
+            } else if (previousAmount == null) {
+                // New siphon installation!
+                val logLine = """{"timestamp":"$nowStr","ip":"${item.ip}","event":"INSTALLED","amount":${item.amount},"timeAgo":"${item.timeAgo}"}"""
+                exportFile.appendText("$logLine\n")
+            }
+            
+            // Update tracking map
+            knownSiphons[item.ip] = item.amount
+        }
+        
+        saveSiphonData()
     }
 
     /**

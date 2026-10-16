@@ -103,6 +103,13 @@ class ScraperAccessibilityService : AccessibilityService() {
             Log.d("DOSSIER", "Parsed ${logUpdates.size} Log Updates")
             DatabaseManager.processUpdates(logUpdates)
         }
+
+        // Attempt parsing for HackEx Siphon screen format
+        val siphonScreen = HackExParser.parseSiphonScreen(combinedText)
+        if (siphonScreen != null) {
+            Log.d("DOSSIER", "Parsed SiphonScreen: $siphonScreen")
+            DatabaseManager.processSiphonScreen(siphonScreen)
+        }
         
         // Notify MainActivity to update the target list UI
         Log.d("DOSSIER", "Sending DATA_UPDATED broadcast to UI")

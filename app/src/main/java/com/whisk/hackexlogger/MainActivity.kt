@@ -143,6 +143,20 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        // Knowledge Base menu (Temporarily disabled while formulas are being reworked)
+        /*
+        findViewById<ImageButton>(R.id.knowledgeBaseBtn).setOnClickListener {
+            val intent = Intent(this, KnowledgeBaseActivity::class.java)
+            startActivity(intent)
+        }
+        */
+
+        // Siphon Alerts menu
+        findViewById<ImageButton>(R.id.siphonAlertsBtn).setOnClickListener {
+            val intent = Intent(this, SiphonAlertsActivity::class.java)
+            startActivity(intent)
+        }
+
         // Settings popup menu
         findViewById<ImageButton>(R.id.settingsBtn).setOnClickListener { view ->
             val popup = PopupMenu(this, view)
