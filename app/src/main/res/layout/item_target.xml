@@ -74,15 +74,12 @@
         android:lineSpacingExtra="4dp"
         android:textIsSelectable="true" />
 
-    <TextView
-        android:id="@+id/walletsText"
+    <LinearLayout
+        android:id="@+id/walletsContainer"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="8dp"
-        android:textColor="#4ade80"
-        android:textSize="14sp"
-        android:lineSpacingExtra="4dp"
-        android:textIsSelectable="true"
+        android:orientation="vertical"
         android:visibility="gone" />
 
     <LinearLayout

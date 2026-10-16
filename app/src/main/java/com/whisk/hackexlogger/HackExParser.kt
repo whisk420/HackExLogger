@@ -28,7 +28,8 @@ object HackExParser {
         val wallet: String? = null,
         val software: Software? = null,
         val isOwnedSoftware: Boolean = false,
-        val raw: String
+        val raw: String,
+        val stolenAmount: Int? = null
     )
 
     /**
@@ -124,6 +125,7 @@ object HackExParser {
     fun parseLogs(rawLines: List<String>): List<ParsedUpdate> {
         val updates = mutableListOf<ParsedUpdate>()
         var lastAccessIp: String? = null
+        var lastAccessTime: String? = null
 
         val validLines = rawLines.filter { line ->
             line.trim().isNotEmpty() && Regex("""^\[.+?\]""").containsMatchIn(line.trim())
@@ -147,6 +149,7 @@ object HackExParser {
                 val ip = extractIp(accessMatch.groupValues[1])
                 if (ip != null && ip != "[UNKNOWN]") {
                     lastAccessIp = ip
+                    lastAccessTime = time
                     updates.add(ParsedUpdate(ip = ip, time = time, raw = line))
                     continue
                 }
@@ -167,15 +170,28 @@ object HackExParser {
                 isOwned = action.startsWith("download")
             }
 
-            // Fallback to the last accessed IP if no explicit IP is in the line
-            if (targetIp == null && lastAccessIp != null) {
+            // Fallback to the last accessed IP if no explicit IP is in the line and it happened at the same time
+            if (targetIp == null && lastAccessIp != null && lastAccessTime == time) {
                 targetIp = lastAccessIp
             }
 
             // Wallets
-            val walletMatch = Regex("""(?:Stole\s+\d[\d,]*\s+Crypto\s+from|\d[\d,]*\s+Crypto\s+transferred\s+to)\s+([a-zA-Z0-9.]{6,})""", RegexOption.IGNORE_CASE).find(line)
-            if (walletMatch != null && targetIp != null) {
-                updates.add(ParsedUpdate(ip = targetIp, time = time, wallet = shortenWallet(walletMatch.groupValues[1]), raw = line))
+            val walletMatch = Regex("""(?:Stole\s+([\d,]+)\s+Crypto\s+from|([\d,]+)\s+Crypto\s+transferred\s+to)\s+([a-zA-Z0-9.]{6,})""", RegexOption.IGNORE_CASE).find(line)
+            if (walletMatch != null) {
+                val rawAmt = if (walletMatch.groupValues[1].isNotEmpty()) walletMatch.groupValues[1] else walletMatch.groupValues[2]
+                val amount = rawAmt.replace(",", "").toIntOrNull()
+                val wallet = shortenWallet(walletMatch.groupValues[3])
+                updates.add(
+                    ParsedUpdate(
+                        ip = targetIp ?: "",
+                        time = time,
+                        wallet = wallet,
+                        stolenAmount = amount,
+                        raw = line
+                    )
+                )
+                // Clear the access IP so subsequent Siphon collections don't falsely claim this IP
+                lastAccessIp = null
                 continue
             }
 

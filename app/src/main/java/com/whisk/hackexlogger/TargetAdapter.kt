@@ -10,6 +10,7 @@ import android.view.ViewGroup
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.graphics.Typeface
 import android.widget.Toast
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.ListAdapter
@@ -117,7 +118,7 @@ class TargetAdapter(
         private val shareBtn: Button = itemView.findViewById(R.id.shareBtn)
         private val deleteBtn: Button = itemView.findViewById(R.id.deleteBtn)
         private val metaText: TextView = itemView.findViewById(R.id.metaText)
-        private val walletsText: TextView = itemView.findViewById(R.id.walletsText)
+        private val walletsContainer: LinearLayout = itemView.findViewById(R.id.walletsContainer)
         private val softwareContainer: LinearLayout = itemView.findViewById(R.id.softwareContainer)
         private val validatedText: TextView = itemView.findViewById(R.id.validatedText)
         private val hardwareText: TextView = itemView.findViewById(R.id.hardwareText)
@@ -177,10 +178,48 @@ class TargetAdapter(
             }
 
             if (target.wallets.isNotEmpty()) {
-                walletsText.text = target.wallets.joinToString("\n") { "WALLET: $it" }
-                walletsText.visibility = View.VISIBLE
+                walletsContainer.removeAllViews()
+                target.wallets.forEach { wallet ->
+                    val row = LinearLayout(itemView.context).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        layoutParams = LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT
+                        ).apply {
+                            setMargins(0, 2, 0, 2)
+                        }
+                    }
+
+                    val walletTv = TextView(itemView.context).apply {
+                        layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                        text = "WALLET: $wallet"
+                        setTextColor(Color.parseColor("#4ade80"))
+                        textSize = 14f
+                        setTextIsSelectable(true)
+                    }
+
+                    row.addView(walletTv)
+
+                    val income = target.getEstimatedIncome(wallet)
+                    if (income != null) {
+                        val incomeTv = TextView(itemView.context).apply {
+                            layoutParams = LinearLayout.LayoutParams(
+                                LinearLayout.LayoutParams.WRAP_CONTENT,
+                                LinearLayout.LayoutParams.WRAP_CONTENT
+                            )
+                            text = income
+                            setTextColor(Color.parseColor("#f59e0b"))
+                            textSize = 14f
+                            setTypeface(null, Typeface.BOLD)
+                        }
+                        row.addView(incomeTv)
+                    }
+
+                    walletsContainer.addView(row)
+                }
+                walletsContainer.visibility = View.VISIBLE
             } else {
-                walletsText.visibility = View.GONE
+                walletsContainer.visibility = View.GONE
             }
 
             if (target.downloads.isNotEmpty()) {

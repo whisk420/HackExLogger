@@ -55,6 +55,9 @@ object DatabaseManager {
         synchronized(cachedRecords) {
             cachedRecords.clear()
             if (loaded != null) {
+                for (record in loaded) {
+                    sanitizeRecord(record)
+                }
                 cachedRecords.addAll(loaded)
             }
         }
@@ -77,6 +80,23 @@ object DatabaseManager {
     }
 
     /**
+     * Ensures deserialized objects from JSON have non-null collections even if missing in legacy saved data.
+     */
+    private fun sanitizeRecord(record: TargetRecord) {
+        val fields = TargetRecord::class.java.declaredFields
+        for (field in fields) {
+            field.isAccessible = true
+            if (field.get(record) == null) {
+                when (field.name) {
+                    "wallets" -> field.set(record, mutableListOf<String>())
+                    "downloads" -> field.set(record, mutableMapOf<String, SoftwareEntry>())
+                    "walletThefts" -> field.set(record, mutableMapOf<String, MutableList<TheftEvent>>())
+                }
+            }
+        }
+    }
+
+    /**
      * Retrieves a thread-safe deep copy of all currently stored target records.
      *
      * @return List of [TargetRecord] objects.
@@ -84,7 +104,14 @@ object DatabaseManager {
     fun getAllRecords(): List<TargetRecord> {
         if (!isInitialized) return emptyList()
         synchronized(cachedRecords) {
-            return cachedRecords.map { it.copy(wallets = it.wallets.toMutableList(), downloads = it.downloads.toMutableMap()) }
+            return cachedRecords.map { record ->
+                sanitizeRecord(record)
+                record.copy(
+                    wallets = record.wallets.toMutableList(),
+                    downloads = record.downloads.toMutableMap(),
+                    walletThefts = record.walletThefts.mapValues { it.value.toMutableList() }.toMutableMap()
+                )
+            }
         }
     }
 
@@ -147,6 +174,29 @@ object DatabaseManager {
 
     private fun getCurrentTimestamp(): String {
         return SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(Date())
+    }
+
+    /**
+     * Helper to parse log timestamps like "10-16 1:16" or "10-15 23:40" into epoch milliseconds.
+     */
+    fun parseLogTime(timeStr: String): Long? {
+        val match = Regex("""^(\d{1,2})-(\d{1,2})\s+(\d{1,2}):(\d{2})$""").find(timeStr.trim()) ?: return null
+        val month = match.groupValues[1].toIntOrNull() ?: return null
+        val day = match.groupValues[2].toIntOrNull() ?: return null
+        val hour = match.groupValues[3].toIntOrNull() ?: return null
+        val minute = match.groupValues[4].toIntOrNull() ?: return null
+
+        val cal = java.util.Calendar.getInstance()
+        var year = cal.get(java.util.Calendar.YEAR)
+        val currentMonth = cal.get(java.util.Calendar.MONTH) + 1
+
+        if (month > currentMonth + 1) {
+            year -= 1
+        }
+
+        cal.set(year, month - 1, day, hour, minute, 0)
+        cal.set(java.util.Calendar.MILLISECOND, 0)
+        return cal.timeInMillis
     }
 
     /**
@@ -270,7 +320,19 @@ object DatabaseManager {
 
     private fun applyUpdatesToMap(recordMap: MutableMap<String, TargetRecord>, updates: List<HackExParser.ParsedUpdate>) {
         for (update in updates) {
-            val ip = update.ip
+            var ip = update.ip
+            
+            if (update.wallet != null) {
+                val existingOwner = recordMap.values.find { it.wallets.contains(update.wallet) }
+                if (ip.isEmpty()) {
+                    if (existingOwner != null) {
+                        ip = existingOwner.ip
+                    } else {
+                        ip = "unknown:wallet_${update.wallet}"
+                    }
+                }
+            }
+
             if (ip.isEmpty()) continue
 
             var record = recordMap[ip]
@@ -280,16 +342,27 @@ object DatabaseManager {
             }
 
             if (update.wallet != null) {
-                val previousOwner = recordMap.values.find { it.ip != ip && it.wallets.contains(update.wallet) }
-                if (previousOwner != null) {
-                    val merged = mergeRecords(record, previousOwner)
-                    merged.ip = ip
-                    recordMap.remove(previousOwner.ip)
-                    record = merged
-                    recordMap[ip] = record
-                }
-                if (!record.wallets.contains(update.wallet)) {
-                    record.wallets.add(update.wallet)
+                if (record.wallets.isNotEmpty() && !record.wallets.contains(update.wallet)) {
+                    logWalletConflict(ip, record.wallets.first(), update.wallet, "LogUpdate")
+                } else {
+                    val previousOwner = recordMap.values.find { it.ip != ip && it.wallets.contains(update.wallet) }
+                    if (previousOwner != null) {
+                        val merged = mergeRecords(record, previousOwner)
+                        merged.ip = ip
+                        recordMap.remove(previousOwner.ip)
+                        record = merged
+                        recordMap[ip] = record
+                    }
+                    if (!record.wallets.contains(update.wallet)) {
+                        record.wallets.add(update.wallet)
+                    }
+                    
+                    if (update.stolenAmount != null && update.time != null) {
+                        val timestampMs = parseLogTime(update.time)
+                        if (timestampMs != null) {
+                            record.addTheftEvent(update.wallet, timestampMs, update.stolenAmount)
+                        }
+                    }
                 }
             }
 
@@ -415,17 +488,21 @@ object DatabaseManager {
             recordMap[newIp] = targetRecord
         }
 
-        val previousOwner = recordMap.values.find { it.ip != targetRecord.ip && it.wallets.contains(wallet) }
-        if (previousOwner != null) {
-            val merged = mergeRecords(targetRecord, previousOwner)
-            merged.ip = targetRecord.ip
-            recordMap.remove(previousOwner.ip)
-            targetRecord = merged
-            recordMap[targetRecord.ip] = targetRecord
-        }
-        
-        if (!targetRecord.wallets.contains(wallet)) {
-            targetRecord.wallets.add(wallet)
+        if (targetRecord.wallets.isNotEmpty() && !targetRecord.wallets.contains(wallet)) {
+            logWalletConflict(targetRecord.ip, targetRecord.wallets.first(), wallet, "WalletScreen")
+        } else {
+            val previousOwner = recordMap.values.find { it.ip != targetRecord.ip && it.wallets.contains(wallet) }
+            if (previousOwner != null) {
+                val merged = mergeRecords(targetRecord, previousOwner)
+                merged.ip = targetRecord.ip
+                recordMap.remove(previousOwner.ip)
+                targetRecord = merged
+                recordMap[targetRecord.ip] = targetRecord
+            }
+            
+            if (!targetRecord.wallets.contains(wallet)) {
+                targetRecord.wallets.add(wallet)
+            }
         }
         targetRecord.lastValidated = getCurrentTimestamp()
         
@@ -501,6 +578,20 @@ object DatabaseManager {
         val incomingIsMasked = incoming.isMasked
         val canonicalIp = if ((!incomingIsMasked && baseIsMasked) || (base.isTemporary && !incoming.isTemporary)) incoming.ip else base.ip
 
+        val distinctWallets = (base.wallets + incoming.wallets).distinct()
+        val finalWallets = if (distinctWallets.size > 1) {
+            logWalletConflict(canonicalIp, distinctWallets[0], distinctWallets[1], "MergeRecords")
+            mutableListOf(distinctWallets[0])
+        } else {
+            distinctWallets.toMutableList()
+        }
+
+        val mergedThefts = (base.walletThefts.keys + incoming.walletThefts.keys).distinct().associateWith { wallet ->
+            val listA = base.walletThefts[wallet] ?: emptyList()
+            val listB = incoming.walletThefts[wallet] ?: emptyList()
+            (listA + listB).distinctBy { "${it.timestampMs}_${it.amount}" }.sortedBy { it.timestampMs }.toMutableList()
+        }.toMutableMap()
+
         return TargetRecord(
             ip = canonicalIp,
             username = incoming.username ?: base.username,
@@ -509,10 +600,25 @@ object DatabaseManager {
             hardware = incoming.hardware ?: base.hardware,
             firewall = incoming.firewall ?: base.firewall,
             encryptor = incoming.encryptor ?: base.encryptor,
-            wallets = (base.wallets + incoming.wallets).distinct().toMutableList(),
+            wallets = finalWallets,
             downloads = (base.downloads + incoming.downloads).toMutableMap(),
+            walletThefts = mergedThefts,
             lastValidated = incoming.lastValidated ?: base.lastValidated
         )
+    }
+
+    private fun logWalletConflict(ip: String, wallet1: String, wallet2: String, source: String) {
+        try {
+            val isoFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply {
+                timeZone = TimeZone.getTimeZone("UTC")
+            }
+            val nowStr = isoFormat.format(Date())
+            val exportFile = File(appContext.filesDir, "wallet_conflicts.jsonl")
+            val logLine = """{"timestamp":"$nowStr","ip":"$ip","existing_wallet":"$wallet1","conflicting_wallet":"$wallet2","source":"$source"}"""
+            exportFile.appendText("$logLine\n")
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
     }
 
     /**
